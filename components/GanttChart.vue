@@ -10,6 +10,7 @@ import { useGanttView, CELL_PX, MINUTES_PER_DAY } from '@/composables/useGanttVi
 import { useTaskStore } from '@/composables/useTaskStore'
 import { useTaskEditor } from '@/composables/useTaskEditor'
 import { useGanttExport } from '@/composables/useGanttExport'
+import { dateOf } from '@/utils/ganttLayout'
 import { useAuth } from '@/composables/useAuth'
 
 // 每格间隔（可配置）
@@ -84,10 +85,28 @@ provide('canEdit', canEdit)
 
 // ====== 日历选天 ======
 const taskStore = useTaskStore()
-// 日期 → 当天任务数
+// 日期 → 当天任务数（跨天任务在其覆盖的每一天都计数）
 const countByDate = computed<Record<string, number>>(() => {
   const m: Record<string, number> = {}
-  for (const d of taskStore.days.value) m[d.date] = d.tasks.length
+  const p = (n: number) => String(n).padStart(2, '0')
+  const seen = new Set<string>()
+  for (const d of taskStore.days.value) {
+    for (const t of d.tasks) {
+      if (seen.has(t.id)) continue
+      seen.add(t.id)
+      // 解析不出日期（旧版纯时刻）时回退到任务所在天的 date
+      const s = dateOf(t.startTime) || d.date
+      const e = t.endTime ? dateOf(t.endTime) || s : s
+      const end = e || s
+      let cur = s
+      while (cur <= end) {
+        m[cur] = (m[cur] || 0) + 1
+        const [y, mo, dd] = cur.split('-').map(Number)
+        const nx = new Date(y, mo - 1, dd + 1)
+        cur = `${nx.getFullYear()}-${p(nx.getMonth() + 1)}-${p(nx.getDate())}`
+      }
+    }
+  }
   return m
 })
 const showCalendar = ref(false)
@@ -267,12 +286,12 @@ function onIntervalConfirm(val: unknown) {
                   class="cell-widget"
                   :style="{ top: seg.dayTop + c.top + 'px' }"
                 >
-                  <span v-if="c.count > 0" class="cell-count">{{ c.count }}</span>
                   <span v-if="c.phase" class="cell-moon" :class="'phase-' + c.phase">
                     <svg class="moon-icon" viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
                       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
                     </svg>
                   </span>
+                  <span v-if="c.count > 0" class="cell-count">{{ c.count }}</span>
                 </div>
                 <div
                   v-for="(lab, i) in timeLabels"
@@ -521,24 +540,33 @@ function onIntervalConfirm(val: unknown) {
   z-index: 0;
   pointer-events: none;
 }
-/* 每格小部件：左边任务数、右边月亮（仅夜间段显示），置于最上层避免被时刻文字遮挡 */
+/* 每格小部件：月亮在最左、任务数圆圈在右对齐，置于最上层避免被时刻文字遮挡 */
 .cell-widget {
   position: absolute;
-  left: 2px;
+  left: 4px;
+  right: 4px;
   z-index: 3;
   transform: translateY(-50%);
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: space-between;
   pointer-events: none;
 }
 .cell-count {
-  font-size: 10px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid #ebedf0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
   font-weight: 700;
   color: #323233;
   line-height: 1;
-  min-width: 8px;
-  text-align: right;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 .cell-moon {
   width: 13px;
@@ -834,25 +862,25 @@ function onIntervalConfirm(val: unknown) {
   left: 50%;
   bottom: auto;
   right: auto;
-  width: min(440px, 92vw);
-  max-height: 60vh;
+  width: min(820px, 96vw);
+  max-height: 94vh;
   transform: translateX(-50%);
   overflow-y: auto;
   background: #fff;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
 }
 .cal {
-  padding: 18px 20px 22px;
+  padding: 14px 16px 18px;
   background: #fff;
 }
 .cal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 6px 14px;
+  padding: 4px 6px 12px;
 }
 .cal-title {
-  font-size: 19px;
+  font-size: 14px;
   font-weight: 700;
   color: #323233;
 }
@@ -860,23 +888,27 @@ function onIntervalConfirm(val: unknown) {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   text-align: center;
-  font-size: 14px;
+  font-size: 11px;
   color: #969799;
   padding-bottom: 10px;
 }
 .cal-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 8px;
+  gap: 18px;
 }
 .cal-cell {
   position: relative;
   aspect-ratio: 1 / 1;
+  box-sizing: border-box;
+  padding: 8px;
+  background-clip: content-box;
+  border: 1px solid #ebedf0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
-  font-size: 20px;
+  border-radius: 8px;
+  font-size: 15px;
   color: #323233;
   cursor: pointer;
   user-select: none;
@@ -894,6 +926,8 @@ function onIntervalConfirm(val: unknown) {
 .cal-cell.cal-sel {
   background: #667eea;
   color: #fff;
+  border-color: transparent;
+  border-radius: 8px;
 }
 .cal-cell.cal-sel.cal-today {
   color: #fff;
@@ -903,21 +937,19 @@ function onIntervalConfirm(val: unknown) {
 }
 .cal-badge {
   position: absolute;
-  right: 6px;
-  bottom: 5px;
-  min-width: 18px;
-  height: 18px;
+  top: -8px;
+  left: -8px;
+  z-index: 2;
+  min-width: 22px;
+  height: 22px;
   padding: 0 4px;
-  border-radius: 9px;
-  background: #07c160;
-  color: #fff;
+  border-radius: 11px;
+  background: #8BC34A;
+  color: #ffffff;
+  border: 1px solid transparent;
   font-size: 12px;
   font-weight: 700;
-  line-height: 18px;
+  line-height: 20px;
   text-align: center;
-}
-.cal-cell.cal-sel .cal-badge {
-  background: #fff;
-  color: #667eea;
 }
 </style>
