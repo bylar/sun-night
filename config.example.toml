@@ -1,0 +1,33 @@
+# sun-night 后台管理配置示例
+# 复制为 config.toml（已被 .gitignore 忽略）后按需修改。
+#
+# 后台访问鉴权（类似 OpenClaw 的 config.toml），支持三种登录方式，三选一：
+#   [admin]
+#   enabled = true
+#   auth_method = "token"        # password | token | url
+#   path = "admin"               # 后台管理页面访问路径（默认 admin，即 /admin，可改为其他）
+#
+# 1) 账号密码（唯一）：auth_method = "password"
+#    [[admin.accounts]]
+#    username = "admin"
+#    password = "admin123"       # 明文，或 "scrypt:" 哈希（由服务的 hashPassword 生成）
+#
+# 2) 固定 token（默认方式）：auth_method = "token"
+#    前端凭此 token 直接登录，无需账号密码。
+#    token = "change-me-token"
+#
+# 3) 自定义 URL：auth_method = "url"
+#    访问 /<path>?key=<url_key> 即免密进入后台（path 见上方配置）。
+#    url_key = "change-me-url-key"
+
+[admin]
+enabled = true
+auth_method = "token"
+path = "admin"
+token = "change-me-token"
+
+# 盟主自助注册开关（由后台控制）：
+# - true：开放注册（登录页可注册新盟主账号）。
+# - false：关闭注册，只能由后台管理员新增账号。
+[registration]
+enabled = true
