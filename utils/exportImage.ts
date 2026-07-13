@@ -73,6 +73,12 @@ export interface ExportOptions {
   watermark?: string
   /** 顶部标题（空=不加标题栏） */
   title?: string
+  /** 顶部时间范围文字（如 "今天 15:00 ~ 明天 22:35"），空=不显示（与 title 任一存在即渲染标题栏） */
+  rangeText?: string
+  /** 自动隐藏首尾空时间格（将窗口收缩到任务实际占用范围） */
+  autoTrim?: boolean
+  /** 自动裁剪时首尾各保留的空白格数（美观留白，默认 2） */
+  trimPadCells?: number
 }
 
 function pad2(n: number): string {
@@ -80,6 +86,23 @@ function pad2(n: number): string {
 }
 function fmtMin(m: number): string {
   return `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`
+}
+// 将任务色转为带透明度的底色（与屏幕 GanttChart.tint 一致：g-col 用 10% 透明任务色）
+function tint(color: string, alpha: number): string {
+  const c = (color || '').replace('#', '')
+  if (/^[0-9a-fA-F]{6}$/.test(c)) {
+    const r = parseInt(c.slice(0, 2), 16)
+    const g = parseInt(c.slice(2, 4), 16)
+    const b = parseInt(c.slice(4, 6), 16)
+    return `rgba(${r},${g},${b},${alpha})`
+  }
+  if (/^[0-9a-fA-F]{3}$/.test(c)) {
+    const r = parseInt(c[0] + c[0], 16)
+    const g = parseInt(c[1] + c[1], 16)
+    const b = parseInt(c[2] + c[2], 16)
+    return `rgba(${r},${g},${b},${alpha})`
+  }
+  return color
 }
 function todayMidnight(): Date {
   const t = new Date()
@@ -183,15 +206,28 @@ function roundRect(
   y: number,
   w: number,
   h: number,
-  r: number
+  r: number | { tl: number; tr: number; br: number; bl: number }
 ) {
-  const rr = Math.min(r, w / 2, h / 2)
+  let tl: number, tr: number, br: number, bl: number
+  if (typeof r === 'number') {
+    tl = tr = br = bl = r
+  } else {
+    tl = r.tl
+    tr = r.tr
+    br = r.br
+    bl = r.bl
+  }
+  const m = (v: number) => Math.min(v, w / 2, h / 2)
+  tl = m(tl)
+  tr = m(tr)
+  br = m(br)
+  bl = m(bl)
   ctx.beginPath()
-  ctx.moveTo(x + rr, y)
-  ctx.arcTo(x + w, y, x + w, y + h, rr)
-  ctx.arcTo(x + w, y + h, x, y + h, rr)
-  ctx.arcTo(x, y + h, x, y, rr)
-  ctx.arcTo(x, y, x + w, y, rr)
+  ctx.moveTo(x + tl, y)
+  ctx.arcTo(x + w, y, x + w, y + h, tr)
+  ctx.arcTo(x + w, y + h, x, y + h, br)
+  ctx.arcTo(x, y + h, x, y, bl)
+  ctx.arcTo(x, y, x + w, y, tl)
   ctx.closePath()
 }
 
@@ -234,15 +270,50 @@ function drawWatermark(ctx: CanvasRenderingContext2D, text: string, w: number, h
 
 /** 从数据模型构建甘特图 Canvas（逻辑坐标，再按 scale 放大以保证高清） */
 export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
-  const { days, interval, startAbs, endAbs, colW, scale, watermark, title } = opts
+  const { days, interval, startAbs, endAbs, colW, scale, watermark, title, rangeText, autoTrim = false, trimPadCells = 2 } = opts
   const pxPerMin = CELL_PX / interval
   const labelStep = interval >= 30 ? interval : 30
 
   const base = getBaseDate(days)
   const ti = todayIndexFromDays(days)
   // startAbs/endAbs 是「相对今天」的绝对分钟；转为相对 baseDate 的统一绝对轴
-  const startAbsBase = startAbs + ti * 1440
-  const endAbsBase = endAbs + ti * 1440
+  let startAbsBase = startAbs + ti * 1440
+  let endAbsBase = endAbs + ti * 1440
+
+  // 自动隐藏首尾空时间格：窗口收缩到「首个任务起点」~「末个任务终点」，两端各留 trimPadCells 格
+  if (autoTrim) {
+    let minStart = Infinity
+    let maxEnd = -Infinity
+    const seen0 = new Set<string>()
+    for (const day of days) {
+      for (const t of day.tasks) {
+        if (seen0.has(t.id)) continue
+        seen0.add(t.id)
+        const aStart = relMin(t.startTime, base)
+        const aEnd = t.endTime ? Math.max(relMin(t.endTime, base), aStart) : aStart
+        if (aStart > endAbsBase || aEnd < startAbsBase) continue // 与窗口无交集
+        minStart = Math.min(minStart, Math.max(aStart, startAbsBase))
+        maxEnd = Math.max(maxEnd, Math.min(aEnd, endAbsBase))
+      }
+    }
+    if (minStart !== Infinity && maxEnd >= minStart) {
+      const pad = Math.max(0, trimPadCells) * interval
+      const ns = Math.max(startAbsBase, Math.floor((minStart - pad) / interval) * interval)
+      const ne = Math.min(endAbsBase, Math.ceil((maxEnd + pad) / interval) * interval)
+      if (ne > ns) {
+        startAbsBase = ns
+        endAbsBase = ne
+      }
+    }
+  }
+
+  // 标题时间范围始终按「实际渲染范围」（autoTrim 收缩后）显示，而非用户原始选择范围
+  const effOff0 = Math.floor(startAbsBase / 1440) - ti
+  const effMin0 = ((startAbsBase % 1440) + 1440) % 1440
+  const effOff1 = Math.floor(endAbsBase / 1440) - ti
+  const effMin1 = ((endAbsBase % 1440) + 1440) % 1440
+  const renderRange = `${monthDayForOffset(effOff0)} ${fmtMin(effMin0)} ~ ${monthDayForOffset(effOff1)} ${fmtMin(effMin1)}`
+
   const startDayOff = Math.floor(startAbsBase / 1440)
   const endDayOff = Math.floor(endAbsBase / 1440)
 
@@ -256,8 +327,12 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
       const aStart = relMin(t.startTime, base)
       const dur = t.endTime ? Math.max(relMin(t.endTime, base) - aStart, 0) : 0
       const aEnd = aStart + dur
-      const cardH = estimateCardPx(t.name, !!t.pavingMode, colW)
-      globalItems.push({ id: t.id, start: aStart, end: aEnd + cardH / pxPerMin })
+      // 与屏幕视图一致：仅对真实时长不足卡片最小高度（44px）的短任务补占位，
+      // 长任务占位为 0，避免长任务被无谓延后结束时间、把后续本可复用的轨道挤到后面（左侧空白）。
+      const MIN_CARD_PX = 44
+      const realHpx = dur * pxPerMin
+      const padMin = Math.max(0, (MIN_CARD_PX - realHpx) / pxPerMin)
+      globalItems.push({ id: t.id, start: aStart, end: aEnd + padMin })
     }
   }
   const layout = assignTracks(globalItems, 0)
@@ -268,7 +343,7 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
   const GUTTER = 64
   const PAD = 8
   const RAIL_W = 20
-  const TITLE_H = title ? 44 : 0
+  const TITLE_H = title || rangeText ? 44 : 0
 
   // 只渲染 [startAbs, endAbs] 覆盖到的天，按每天各自的可见窗口裁剪
   const dayData: BuiltDay[] = []
@@ -341,19 +416,28 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, contentW, contentH)
 
-  // 标题栏
-  if (title) {
+  // 标题栏：提供 title 或 rangeText 任一即渲染。左=标题，右=时间范围（含具体日期+时刻）
+  if (title || rangeText) {
     ctx.fillStyle = '#f7f8fa'
     ctx.fillRect(0, 0, contentW, TITLE_H)
-    ctx.fillStyle = '#323233'
-    ctx.font = '700 18px "PingFang SC", "Microsoft YaHei", sans-serif'
     ctx.textBaseline = 'middle'
-    ctx.textAlign = 'left'
-    ctx.fillText(title, PAD, TITLE_H / 2)
+    if (title) {
+      ctx.fillStyle = '#323233'
+      ctx.font = '700 18px "PingFang SC", "Microsoft YaHei", sans-serif'
+      ctx.textAlign = 'left'
+      ctx.fillText(title, PAD, TITLE_H / 2)
+    }
     ctx.textAlign = 'right'
-    ctx.font = '500 12px "PingFang SC", "Microsoft YaHei", sans-serif'
-    ctx.fillStyle = '#969799'
-    ctx.fillText(`${monthDayForOffset(dayData[0].offset)} ~ ${monthDayForOffset(dayData[dayData.length - 1].offset)}`, contentW - PAD, TITLE_H / 2)
+    if (rangeText) {
+      // 顶部时间范围显示「实际渲染范围」（autoTrim 收缩后），避免显示去头去尾前的原始选择范围
+      ctx.fillStyle = '#1989fa'
+      ctx.font = '600 14px "PingFang SC", "Microsoft YaHei", sans-serif'
+      ctx.fillText(renderRange, contentW - PAD, TITLE_H / 2)
+    } else {
+      ctx.fillStyle = '#969799'
+      ctx.font = '500 12px "PingFang SC", "Microsoft YaHei", sans-serif'
+      ctx.fillText(`${monthDayForOffset(dayData[0].offset)} ~ ${monthDayForOffset(dayData[dayData.length - 1].offset)}`, contentW - PAD, TITLE_H / 2)
+    }
   }
 
   // ===== 先画网格（不含任务卡片；日期表头/现在线已移除，连续时间轴）=====
@@ -404,8 +488,8 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
       const cardW = cellW - RAIL_W
       const cardH = Math.max(height, 40)
 
-      // 色块（整段连续）
-      roundRect(ctx, cellX, top, RAIL_W, height, 6)
+      // 色块（整段连续）：左侧圆角与屏幕一致（仅左上/左下圆角）
+      roundRect(ctx, cellX, top, RAIL_W, height, { tl: 6, tr: 0, br: 0, bl: 6 })
       ctx.fillStyle = t.color
       ctx.globalAlpha = 0.95
       ctx.fill()
@@ -414,16 +498,16 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
       ctx.strokeStyle = 'rgba(255,255,255,0.25)'
       ctx.stroke()
 
-      // 名称框（仅画一次，置于起点）
-      roundRect(ctx, cardX, top, cardW, cardH, 6)
-      ctx.fillStyle = '#ffffff'
+      // 名称框（仅画一次，置于起点）：背景为任务色 10% 透明（与屏幕 g-col 的 tint(t.color,0.1) 一致），右侧圆角
+      roundRect(ctx, cardX, top, cardW, cardH, { tl: 0, tr: 6, br: 6, bl: 0 })
+      ctx.fillStyle = tint(t.color, 0.1)
       ctx.fill()
       ctx.strokeStyle = t.task.isHighlighted ? '#ee0a24' : 'rgba(0,0,0,0.06)'
       ctx.lineWidth = t.task.isHighlighted ? 2 : 1
       ctx.stroke()
 
-      // 名称（换行，最多 3 行）
-      ctx.fillStyle = '#323233'
+      // 名称（换行，最多 3 行）：颜色与屏幕一致，用任务色（非深灰）
+      ctx.fillStyle = t.color
       ctx.font = '600 12px "PingFang SC", "Microsoft YaHei", sans-serif'
       ctx.textAlign = 'left'
       ctx.textBaseline = 'top'
@@ -466,6 +550,29 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
         ctx.arc(cellX + RAIL_W / 2, top + 6, 4, 0, Math.PI * 2)
         ctx.fill()
       }
+
+      // 宣战（declare）结束后追加 1 小时「宣战中」纯色块：与宣战色条同宽、半透明延续色、居中红色 ⚔，
+      // 与屏幕视图一致（无名称/描述文字）
+      if (t.task.template === 'declare' && t.task.endTime) {
+        const trailH = 60 * pxPerMin
+        const trTop = tEnd
+        const hex = (t.color || '#ff976a').replace('#', '')
+        const rgba =
+          /^[0-9a-fA-F]{6}$/.test(hex)
+            ? `rgba(${parseInt(hex.slice(0, 2), 16)},${parseInt(hex.slice(2, 4), 16)},${parseInt(hex.slice(4, 6), 16)},0.4)`
+            : t.color || '#ff976a'
+        roundRect(ctx, cellX, trTop, RAIL_W, trailH, { tl: 6, tr: 0, br: 0, bl: 6 })
+        ctx.fillStyle = rgba
+        ctx.fill()
+        ctx.lineWidth = 1
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)'
+        ctx.stroke()
+        ctx.fillStyle = '#ee0a24'
+        ctx.font = '700 20px sans-serif'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText('⚔', cellX + RAIL_W / 2, trTop + trailH / 2)
+      }
     }
     ctx.restore()
   }
@@ -480,16 +587,9 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
 
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
-    // 日界（00:00 / 24:00）用「月-日」代替时间，避免相邻天文字重叠
-    ctx.fillStyle = '#1989fa'
-    ctx.font = '700 13px "PingFang SC", "Microsoft YaHei", sans-serif'
-    ctx.fillText(monthDayForOffset(d.offset), GUTTER - 6, bodyY)
-    // 末天若结束于午夜，补绘次日日期（收尾边界）
-    if (di === dayData.length - 1 && Math.round(d.winEnd) === 1440) {
-      ctx.fillText(monthDayForOffset(d.offset + 1), GUTTER - 6, bodyY + dayWinH)
-    }
 
-    // 时间刻度（跳过 0:00 与 24:00，已由日期代替）
+    // 时间刻度（日期/时间范围已在顶部标题栏完整显示，此处不再重复绘制日界日期，
+    // 避免 autoTrim 收缩窗口后日界标签落在某时间刻度上造成重叠）
     ctx.fillStyle = '#646566'
     ctx.font = '700 13.75px "PingFang SC", monospace'
     const firstM = Math.ceil(d.winStart / labelStep) * labelStep

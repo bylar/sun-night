@@ -33,6 +33,8 @@ export function useGanttExport(
   const exUseWatermark = ref(false)
   const exTitle = ref('')
   const exActiveNames = ref<string[]>([])
+  const exAutoTrim = ref(true) // 自动隐藏首尾空时间格（默认启用）
+  const exTrimPad = ref(2) // 首尾保留的空白格数（默认 2）
 
   // ====== datetime 范围 ======
   function todayDate(): Date {
@@ -130,7 +132,10 @@ export function useGanttExport(
       colW: exColW.value,
       scale: exScale.value,
       watermark: exUseWatermark.value ? exWatermark.value : '',
-      title: exTitle.value || undefined
+      title: exTitle.value || undefined,
+      rangeText: `${formatDateTime(exStart.value)} ~ ${formatDateTime(exEnd.value)}`,
+      autoTrim: exAutoTrim.value,
+      trimPadCells: exTrimPad.value
     })
     previewCanvas.value = canvas
     previewUrl.value = canvas.toDataURL('image/png')
@@ -157,6 +162,8 @@ export function useGanttExport(
     exWatermark,
     exTitle,
     exActiveNames,
+    exAutoTrim,
+    exTrimPad,
     exStart,
     exEnd,
     showExStartPicker,

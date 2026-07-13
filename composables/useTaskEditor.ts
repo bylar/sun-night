@@ -15,6 +15,43 @@ const PAVING_PACE_MIN: Record<'auto' | 'relay', number> = {
   relay: 3
 }
 
+// ====== 大营夜间暂停（与夜间相位一致：normal 段 = 09:00–24:00，即分钟 540–1440）======
+// 大营仅在白天推进，夜间 00:00–09:00 暂停。例：23:30 建 1.5h 同盟大营 → 次日 10:00 完成。
+const CAMP_ACTIVE_START = 540
+const DAY_MIN = 1440
+
+/** 绝对分钟 → "YYYY-MM-DD HH:mm" */
+function absMinutesToDateTime(abs: number): string {
+  const dayNum = Math.floor(abs / DAY_MIN)
+  const minutes = ((abs % DAY_MIN) + DAY_MIN) % DAY_MIN
+  const d = new Date(dayNum * 86400000) // UTC 零点
+  const y = d.getUTCFullYear()
+  const mo = d.getUTCMonth() + 1
+  const da = d.getUTCDate()
+  return `${y}-${pad(mo)}-${pad(da)} ${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`
+}
+
+/** 大营结束时间：从开始时间按「夜间暂停」推进 durationMin 分钟（仅白天 09:00–24:00 计耗时） */
+function campEndTime(start: string, durationMin: number): string {
+  let cur = absMinutes(start)
+  let remaining = durationMin
+  while (remaining > 0) {
+    const dayStart = Math.floor(cur / DAY_MIN) * DAY_MIN
+    const activeStart = dayStart + CAMP_ACTIVE_START
+    const activeEnd = dayStart + DAY_MIN
+    if (cur < activeStart) cur = activeStart // 跳过夜间，跳到当天早上
+    const avail = activeEnd - cur
+    if (remaining <= avail) {
+      cur += remaining
+      remaining = 0
+    } else {
+      remaining -= avail
+      cur = activeEnd // 当天白天用完，跨到次日早上继续
+    }
+  }
+  return absMinutesToDateTime(cur)
+}
+
 // ====== 内置事务模板库 ======
 export interface TaskTemplate {
   id: TaskTemplateId
@@ -30,10 +67,9 @@ export interface TaskTemplate {
   customEnd?: boolean
 }
 export const TEMPLATES: TaskTemplate[] = [
-  { id: 'pave', name: '铺路', icon: 'guide-o', color: '#1989fa', countMode: 'time', countValue: 30, customEnd: true },
   { id: 'siege', name: '攻城大营', icon: 'fire-o', color: '#ee0a24', durationMin: 60, pavingMode: '', customEnd: false },
   { id: 'ally', name: '同盟大营', icon: 'friends-o', color: '#7232dd', durationMin: 90, pavingMode: '', customEnd: false },
-  { id: 'declare', name: '宣战', icon: 'warning-o', color: '#ff976a', durationMin: 60, minDurationMin: 60, stepMin: 10, customEnd: true },
+  { id: 'declare', name: '宣战', icon: 'warning-o', color: '#ff976a', durationMin: 60, customEnd: true },
   { id: 'auto-pave', name: '自动铺路', icon: 'logistics', color: '#07c160', pavingMode: 'auto', countMode: 'count', countValue: 10, customEnd: true },
   { id: 'relay-pave', name: '接力铺路', icon: 'exchange', color: '#00b8d4', pavingMode: 'relay', countMode: 'count', countValue: 10, customEnd: true },
   { id: 'custom', name: '自定义事务', icon: 'add-square', color: '#07c160', customEnd: true }
@@ -207,14 +243,15 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     editForm.value.customEnd = t.customEnd ?? true
 
     if (t.durationMin && t.durationMin > 0) {
-      editForm.value.endTime = addMinutesToTime(editForm.value.startTime, t.durationMin)
+      // 大营（customEnd=false）按夜间暂停推算；其余按固定时长
+      editForm.value.endTime = t.customEnd === false
+        ? campEndTime(editForm.value.startTime, t.durationMin)
+        : addMinutesToTime(editForm.value.startTime, t.durationMin)
     } else if (t.pavingMode && t.countValue) {
       const pace = PAVING_PACE_MIN[t.pavingMode]
       const mins = Math.round(t.countValue * pace)
       editForm.value.endTime = addMinutesToTime(editForm.value.startTime, mins)
       editForm.value.count = t.countValue
-    } else if (t.countMode === 'time' && t.countValue) {
-      editForm.value.endTime = addMinutesToTime(editForm.value.startTime, t.countValue)
     }
 
     showTemplatePopup.value = false
@@ -237,7 +274,10 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     editForm.value.startTime = `${v[0]} ${v[1] ?? '00'}:${v[2] ?? '00'}`
     showStartPicker.value = false
     if (editForm.value.durationMin > 0) {
-      editForm.value.endTime = addMinutesToTime(editForm.value.startTime, editForm.value.durationMin)
+      // 大营改开始时间时也按夜间暂停重算结束时间
+      editForm.value.endTime = editForm.value.customEnd === false
+        ? campEndTime(editForm.value.startTime, editForm.value.durationMin)
+        : addMinutesToTime(editForm.value.startTime, editForm.value.durationMin)
     } else {
       syncPaveFromEndTime()
     }

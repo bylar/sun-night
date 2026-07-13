@@ -9,6 +9,20 @@
         <Cell title="结束时间" :value="formatDateTime(exEnd)" is-link @click="showExEndPicker = true" />
       </div>
 
+      <div class="ex-section">
+        <div class="ex-label">留白裁剪</div>
+        <Cell title="自动隐藏首尾空时间格" center>
+          <template #value>
+            <Switch v-model="exAutoTrim" />
+          </template>
+        </Cell>
+        <Cell v-if="exAutoTrim" title="保留留白格数" center>
+          <template #value>
+            <Stepper v-model="exTrimPad" :min="0" :max="12" :step="1" />
+          </template>
+        </Cell>
+      </div>
+
       <Collapse v-model="exActiveNames" class="ex-collapse">
         <CollapseItem title="详细配置（清晰度 / 画幅 / 水印）" name="detail">
           <div class="ex-section">
@@ -95,6 +109,8 @@ const {
   exWatermark,
   exTitle,
   exActiveNames,
+  exAutoTrim,
+  exTrimPad,
   exStart,
   exEnd,
   showExStartPicker,

@@ -309,13 +309,13 @@ function onIntervalConfirm(val: unknown) {
             <div class="plot" ref="plotRef" @scroll="updateScrollIndicators">
               <div
                 class="plot-content"
-                :style="[gridStyle, { width: view.maxTotalGlobal * view.colW + 'px', minHeight: view.contentHeight + 'px' }]"
+                :style="[gridStyle, { width: view.totalWidth + 'px', minHeight: view.contentHeight + 'px' }]"
               >
                 <div
                   v-for="t in allTasks"
                   :key="t.fid"
                   class="task-row"
-                  :class="{ highlighted: t.task.isHighlighted, instant: t.instant }"
+                  :class="{ highlighted: t.task.isHighlighted, instant: t.instant, silent: t.silent }"
                   :style="{
                     top: t.top + 'px',
                     height: t.height + 'px',
@@ -324,41 +324,50 @@ function onIntervalConfirm(val: unknown) {
                   }"
                   @click="canEdit && editor.openEdit(t.task)"
                 >
-                  <div
-                    class="rail-block"
-                    :class="{ highlighted: t.task.isHighlighted }"
-                    :style="{
-                      background: t.color,
-                      borderRadius: (t.firstFrag ? 6 : 0) + 'px 0 0 ' + (t.lastFrag ? 6 : 0) + 'px',
-                      boxShadow:
-                        'inset 1px 0 0 rgba(255,255,255,0.25)' +
-                        (t.firstFrag ? ', inset 0 1px 0 rgba(255,255,255,0.25)' : '') +
-                        (t.lastFrag ? ', inset 0 -1px 0 rgba(255,255,255,0.25)' : '')
-                    }"
-                  >
-                    <span
-                      v-for="(tk, i) in t.ticks"
-                      :key="i"
-                      class="pave-tick"
-                      :style="{ top: tk.top + 'px' }"
-                      >{{ tk.count }}</span
+                  <template v-if="t.silent">
+                    <div
+                      class="trail-block"
+                      :class="{ highlighted: t.task.isHighlighted }"
+                      :style="{ background: t.color }"
+                    >⚔</div>
+                  </template>
+                  <template v-else>
+                    <div
+                      class="rail-block"
+                      :class="{ highlighted: t.task.isHighlighted }"
+                      :style="{
+                        background: t.color,
+                        borderRadius: (t.firstFrag ? 6 : 0) + 'px 0 0 ' + (t.lastFrag ? 6 : 0) + 'px',
+                        boxShadow:
+                          'inset 1px 0 0 rgba(255,255,255,0.25)' +
+                          (t.firstFrag ? ', inset 0 1px 0 rgba(255,255,255,0.25)' : '') +
+                          (t.lastFrag ? ', inset 0 -1px 0 rgba(255,255,255,0.25)' : '')
+                      }"
                     >
-                  </div>
-                  <div
-                    class="g-col"
-                    :class="{ highlighted: t.task.isHighlighted }"
-                    :style="{
-                      borderRadius: '0 ' + (t.firstFrag ? 6 : 0) + 'px ' + (t.lastFrag ? 6 : 0) + 'px 0',
-                      backgroundColor: tint(t.color, 0.1)
-                    }"
-                  >
-                    <div class="col-head">
-                      <span class="col-name" :style="{ color: t.color }">{{ t.task.name || '事务' }}</span>
-                      <span v-if="t.task.pavingMode" class="col-pave">{{
-                        t.task.pavingMode === 'auto' ? '自动' : '接力'
-                      }}</span>
+                      <span
+                        v-for="(tk, i) in t.ticks"
+                        :key="i"
+                        class="pave-tick"
+                        :style="{ top: tk.top + 'px' }"
+                        >{{ tk.count }}</span
+                      >
                     </div>
-                  </div>
+                    <div
+                      class="g-col"
+                      :class="{ highlighted: t.task.isHighlighted }"
+                      :style="{
+                        borderRadius: '0 ' + (t.firstFrag ? 6 : 0) + 'px ' + (t.lastFrag ? 6 : 0) + 'px 0',
+                        backgroundColor: tint(t.color, 0.1)
+                      }"
+                    >
+                      <div class="col-head">
+                        <span class="col-name" :style="{ color: t.color }">{{ t.task.name || '事务' }}</span>
+                        <span v-if="t.task.pavingMode" class="col-pave">{{
+                          t.task.pavingMode === 'auto' ? '自动' : '接力'
+                        }}</span>
+                      </div>
+                    </div>
+                  </template>
                 </div>
               </div>
             </div>
@@ -662,6 +671,26 @@ function onIntervalConfirm(val: unknown) {
   white-space: nowrap;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
   pointer-events: none;
+}
+/* 宣战后的「宣战中」纯色块：与宣战卡片左侧的实心色条（rail-block）同宽(22px)、左对齐，
+   无文字/描述，半透明延续色，接在宣战结束色块之后 */
+.trail-block {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 22px;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  color: #ee0a24;
+}
+.trail-block.highlighted {
+  box-shadow: inset 0 0 0 2px rgba(238, 10, 36, 0.6);
 }
 .g-col {
   position: absolute;

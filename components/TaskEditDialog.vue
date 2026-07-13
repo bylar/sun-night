@@ -3,30 +3,31 @@
     <div class="edit-popup">
       <h3>{{ editingTask ? '编辑事务' : '新增事务' }}</h3>
 
-      <Field v-model="editForm.name" label="名称" placeholder="如：开交宣战 / 纳粮双城" :border="false" />
+      <Field v-model="editForm.name" label="事务标题" placeholder="如：开交宣战 / 纳粮双城" :border="false" />
 
       <Cell title="开始时间" :value="fmtDateTime(editForm.startTime)" is-link @click="showStartPicker = true" />
       <Cell
+        v-if="!editForm.pavingMode"
         title="结束时间"
         :value="editForm.endTime ? fmtDateTime(editForm.endTime) : '无（瞬时）'"
-        is-link
-        @click="showEndPicker = true"
+        :is-link="editForm.customEnd"
+        @click="editForm.customEnd && (showEndPicker = true)"
       />
       <Cell
-        v-if="editForm.endTime"
+        v-if="!editForm.pavingMode && editForm.endTime && editForm.customEnd"
         title="清除结束时间"
         value="设为瞬时"
         is-link
         @click="clearEndTime"
       />
 
-      <!-- 铺路模式 + 格数/时间互转 -->
+      <!-- 铺路模式 + 格数/时间互转（两种铺路预设的铺路模式固定，仅展示不可改） -->
       <template v-if="editForm.pavingMode">
         <Cell
           title="铺路模式"
           :value="pavingOptions.find((p) => p.value === editForm.pavingMode)?.text"
-          is-link
-          @click="showPavingPicker = true"
+          :is-link="editForm.template !== 'auto-pave' && editForm.template !== 'relay-pave'"
+          @click="(editForm.template !== 'auto-pave' && editForm.template !== 'relay-pave') && (showPavingPicker = true)"
         />
         <Cell title="填写方式" center>
           <template #value>
@@ -54,7 +55,13 @@
           placeholder="铺路格数"
           :border="false"
         />
-        <Cell v-else title="铺路时长" :value="paveDurationText" is-link @click="showEndPicker = true" />
+        <!-- 结束时间：铺路推算结果。按格数时由系统计算（只读）；按时间时点选时间（按时间铺路） -->
+        <Cell
+          :title="editForm.countMode === 'count' ? '预计结束时间' : '结束时间'"
+          :value="editForm.endTime ? fmtDateTime(editForm.endTime) : '—'"
+          :is-link="editForm.countMode === 'time'"
+          @click="editForm.countMode === 'time' && (showEndPicker = true)"
+        />
       </template>
 
       <!-- 自定义事务提示 -->
@@ -78,15 +85,11 @@
               :style="{ background: c }"
               @click="editForm.color = c"
             ></span>
-            <label class="color-custom">
-              <input type="color" v-model="editForm.color" />
-              <span>自定义</span>
-            </label>
           </div>
         </template>
       </Cell>
 
-      <Cell title="优先级">
+      <Cell title="优先级" v-if="editForm.template !== 'siege' && editForm.template !== 'ally'">
         <template #value>
           <Button
             size="mini"
@@ -109,7 +112,7 @@
 
       <Field
         v-model="editForm.description"
-        label="备注"
+        label="事务说明"
         type="textarea"
         rows="2"
         autosize
@@ -118,7 +121,7 @@
       />
 
       <Field
-        v-if="!editForm.pavingMode"
+        v-if="!editForm.pavingMode && editForm.template !== 'siege' && editForm.template !== 'ally'"
         v-model="editForm.count"
         label="计数"
         type="digit"
@@ -230,9 +233,11 @@ const {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+  padding: 6px 0;
   justify-content: flex-end;
 }
 .color-swatch {
+  box-sizing: border-box;
   width: 20px;
   height: 20px;
   border-radius: 50%;
@@ -242,22 +247,8 @@ const {
 }
 .color-swatch.selected {
   transform: scale(1.18);
+  position: relative;
+  z-index: 1;
   box-shadow: 0 0 0 2px #1989fa, inset 0 0 0 1px rgba(0, 0, 0, 0.1);
-}
-.color-custom {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: #646566;
-  cursor: pointer;
-}
-.color-custom input[type='color'] {
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
 }
 </style>

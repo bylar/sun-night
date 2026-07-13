@@ -9,10 +9,9 @@ export type PavingMode =
 
 /** 内置事务模板类型（点击后自动填充参数） */
 export type TaskTemplateId =
-  | 'pave' // 铺路（手动单格耗时，无预设）
-  | 'siege' // 攻城大营（固定 1 小时）
-  | 'ally' // 同盟大营（固定 1.5 小时）
-  | 'declare' // 宣战（默认 1h，可 10 分钟粒度自定义）
+  | 'siege' // 攻城大营（固定 1 小时，夜间暂停）
+  | 'ally' // 同盟大营（固定 1.5 小时，夜间暂停）
+  | 'declare' // 宣战（默认 1h，可自定义）
   | 'auto-pave' // 自动铺路（填格数 / 时间互转）
   | 'relay-pave' // 接力铺路（填格数 / 时间互转）
   | 'custom' // 自定义事务

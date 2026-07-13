@@ -99,13 +99,24 @@ onBeforeUnmount(stopSSE)
     </div>
     <template v-else-if="currentRoom">
       <header class="app-bar">
-        <button class="bar-btn" type="button" @click="leave">返回</button>
+        <button
+          v-if="isOwner || currentRoom?.adminMode"
+          class="bar-btn bar-back"
+          type="button"
+          @click="leave"
+          aria-label="返回"
+        >🏠</button>
         <div class="bar-room">
           <span class="bar-name">{{ currentRoom.name }}</span>
           <span class="bar-code">#{{ currentRoom.code }}</span>
           <span v-if="!canEdit" class="readonly-tag">只读</span>
         </div>
-        <button v-if="isOwner" class="bar-btn" type="button" @click="showShares = true">
+        <button
+          v-if="isOwner || currentRoom?.adminMode"
+          class="bar-btn"
+          type="button"
+          @click="showShares = true"
+        >
           <Icon name="share-o" />
         </button>
         <span v-else class="bar-guest">访客·{{ currentRoom.guestName }}</span>
@@ -156,6 +167,11 @@ onBeforeUnmount(stopSSE)
   color: #1989fa;
   font-size: 14px;
   cursor: pointer;
+}
+.bar-back {
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 4px;
 }
 .bar-room {
   display: flex;
