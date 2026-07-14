@@ -12,7 +12,23 @@ export default defineEventHandler(async (event) => {
   requireCanEdit(ctx)
 
   const body = await readBody(event)
+  const tasks = body.tasks as TaskItem[] | undefined
   const task = body.task as TaskItem | undefined
+
+  // 批量新增（周期计划）：body.tasks 为任务数组
+  if (Array.isArray(tasks) && tasks.length > 0) {
+    const created: TaskItem[] = []
+    for (const t of tasks) {
+      if (!t || !t.name) continue
+      created.push(await createTask(ctx.room.id, t))
+    }
+    if (created.length === 0) throw createError({ statusCode: 400, statusMessage: '任务名称必填' })
+    await logAccess(event, ctx, 'create_tasks')
+    const version = await touch(ctx.room.id)
+    broadcast(ctx.room.code, { type: 'tasks', payload: { days: await loadDays(ctx.room.id), version } })
+    return { ok: true, tasks: created }
+  }
+
   if (!task || !task.name) throw createError({ statusCode: 400, statusMessage: '任务名称必填' })
 
   const t = await createTask(ctx.room.id, task)

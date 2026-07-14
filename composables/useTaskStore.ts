@@ -95,6 +95,29 @@ export function useTaskStore() {
     api(`/api/rooms/${code}/tasks/${id}`, { method: 'DELETE' }).catch(() => {})
   }
 
+  /** 批量新增（周期计划）：本地乐观插入并一次性提交 */
+  function addTasks(payloads: TaskItem[]) {
+    const code = roomCode()
+    if (!code || !auth.currentRoom.value?.canEdit || payloads.length === 0) return
+    for (const p of payloads) {
+      const task: TaskItem = { ...p }
+      const dateStr = dateOf(task.startTime) || todayStr()
+      ensureDay(dateStr).tasks.push(task)
+    }
+    api(`/api/rooms/${code}/tasks`, { method: 'POST', body: { tasks: payloads } }).catch(() => {})
+  }
+
+  /** 删除整个周期计划（按 seriesId 批量移除） */
+  function removeBySeries(seriesId: string) {
+    const code = roomCode()
+    if (!code || !auth.currentRoom.value?.canEdit) return
+    days.value = days.value.map((d) => ({
+      ...d,
+      tasks: d.tasks.filter((t) => t.seriesId !== seriesId)
+    }))
+    api(`/api/rooms/${code}/tasks/series`, { method: 'DELETE', body: { seriesId } }).catch(() => {})
+  }
+
   function resetData() {
     const code = roomCode()
     if (!code || !auth.currentRoom.value?.isOwner) return
@@ -102,5 +125,5 @@ export function useTaskStore() {
     api(`/api/rooms/${code}/tasks`, { method: 'DELETE' }).catch(() => {})
   }
 
-  return { days, loaded, load, setDays, addTask, updateTask, removeTask, resetData }
+  return { days, loaded, load, setDays, addTask, updateTask, removeTask, addTasks, removeBySeries, resetData }
 }

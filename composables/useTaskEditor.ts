@@ -9,85 +9,25 @@ import type { TaskItem, TaskPriority, TaskTemplateId } from '@/types/gantt'
 import { useTaskStore } from '@/composables/useTaskStore'
 import { parseDateTime, absMinutes, dateOf } from '@/utils/ganttLayout'
 
-// ====== 铺路节奏（与视图一致）======
-const PAVING_PACE_MIN: Record<'auto' | 'relay', number> = {
-  auto: (3 * 60 + 10) / 60,
-  relay: 3
-}
+// ====== 铺路节奏 / 时间计算（抽到 utils/taskTime）======
+import {
+  PAVING_PACE_MIN,
+  CAMP_ACTIVE_START,
+  DAY_MIN,
+  pad,
+  todayDateStr,
+  fmtDateTimeFromDate,
+  addMinutesToTime,
+  defaultStart,
+  absMinutesToDateTime,
+  campEndTime
+} from '@/utils/taskTime'
+// ====== 模板常量（抽到 utils/taskTemplates）======
+import { type TaskTemplate } from '@/utils/taskTemplates'
+// 注：模板常量/时间格式化的唯一来源为 @/utils/taskTemplates 与 @/utils/taskTime，
+// 消费者请直接从对应模块引入；此处不再 re-export，避免 Nuxt 自动导入重复告警。
 
-// ====== 大营夜间暂停（与夜间相位一致：normal 段 = 09:00–24:00，即分钟 540–1440）======
-// 大营仅在白天推进，夜间 00:00–09:00 暂停。例：23:30 建 1.5h 同盟大营 → 次日 10:00 完成。
-const CAMP_ACTIVE_START = 540
-const DAY_MIN = 1440
-
-/** 绝对分钟 → "YYYY-MM-DD HH:mm" */
-function absMinutesToDateTime(abs: number): string {
-  const dayNum = Math.floor(abs / DAY_MIN)
-  const minutes = ((abs % DAY_MIN) + DAY_MIN) % DAY_MIN
-  const d = new Date(dayNum * 86400000) // UTC 零点
-  const y = d.getUTCFullYear()
-  const mo = d.getUTCMonth() + 1
-  const da = d.getUTCDate()
-  return `${y}-${pad(mo)}-${pad(da)} ${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`
-}
-
-/** 大营结束时间：从开始时间按「夜间暂停」推进 durationMin 分钟（仅白天 09:00–24:00 计耗时） */
-function campEndTime(start: string, durationMin: number): string {
-  let cur = absMinutes(start)
-  let remaining = durationMin
-  while (remaining > 0) {
-    const dayStart = Math.floor(cur / DAY_MIN) * DAY_MIN
-    const activeStart = dayStart + CAMP_ACTIVE_START
-    const activeEnd = dayStart + DAY_MIN
-    if (cur < activeStart) cur = activeStart // 跳过夜间，跳到当天早上
-    const avail = activeEnd - cur
-    if (remaining <= avail) {
-      cur += remaining
-      remaining = 0
-    } else {
-      remaining -= avail
-      cur = activeEnd // 当天白天用完，跨到次日早上继续
-    }
-  }
-  return absMinutesToDateTime(cur)
-}
-
-// ====== 内置事务模板库 ======
-export interface TaskTemplate {
-  id: TaskTemplateId
-  name: string
-  icon: string
-  color: string
-  durationMin?: number
-  pavingMode?: '' | 'auto' | 'relay'
-  countMode?: 'count' | 'time'
-  countValue?: number
-  minDurationMin?: number
-  stepMin?: number
-  customEnd?: boolean
-}
-export const TEMPLATES: TaskTemplate[] = [
-  { id: 'siege', name: '攻城大营', icon: 'fire-o', color: '#ee0a24', durationMin: 60, pavingMode: '', customEnd: false },
-  { id: 'ally', name: '同盟大营', icon: 'friends-o', color: '#7232dd', durationMin: 90, pavingMode: '', customEnd: false },
-  { id: 'declare', name: '宣战', icon: 'warning-o', color: '#ff976a', durationMin: 60, customEnd: true },
-  { id: 'auto-pave', name: '自动铺路', icon: 'logistics', color: '#07c160', pavingMode: 'auto', countMode: 'count', countValue: 10, customEnd: true },
-  { id: 'relay-pave', name: '接力铺路', icon: 'exchange', color: '#00b8d4', pavingMode: 'relay', countMode: 'count', countValue: 10, customEnd: true },
-  { id: 'custom', name: '自定义事务', icon: 'add-square', color: '#07c160', customEnd: true }
-]
-
-export const COLOR_PRESETS = [
-  '#07c160', '#ee0a24', '#ff976a', '#1989fa',
-  '#7232dd', '#ffcd00', '#323233', '#969799',
-  '#00b8d4', '#e91e63'
-]
-
-export const pavingOptions = [
-  { text: '不铺路', value: '' },
-  { text: '自动铺路 (3分10秒/格)', value: 'auto' },
-  { text: '接力铺路 (3分/格)', value: 'relay' }
-]
-
-// ====== vant 4 Picker @confirm 兼容取值 ======
+// ====== vant 4 Picker @confirm 兼容取值（仅本模块内部使用）======
 function pickValues(val: unknown): (string | number)[] {
   if (val && typeof val === 'object' && 'selectedValues' in (val as Record<string, unknown>)) {
     const sv = (val as { selectedValues?: (string | number)[] }).selectedValues
@@ -96,53 +36,8 @@ function pickValues(val: unknown): (string | number)[] {
   return Array.isArray(val) ? (val as (string | number)[]) : [val as string | number]
 }
 
-const pad = (n: number) => String(n).padStart(2, '0')
-
-/** 今天日期 "YYYY-MM-DD" */
-function todayDateStr(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
-/** Date → "YYYY-MM-DD HH:mm" */
-function fmtDateTimeFromDate(d: Date): string {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-/** 在 datetime 基础上加分钟（支持跨天），返回 "YYYY-MM-DD HH:mm" */
-function addMinutesToTime(start: string, mins: number): string {
-  const { date, minutes } = parseDateTime(start)
-  const base = date || todayDateStr()
-  const [y, mo, d] = base.split('-').map(Number)
-  const dt = new Date(y || 1970, (mo || 1) - 1, d || 1, 0, minutes + mins, 0, 0)
-  return fmtDateTimeFromDate(dt)
-}
-
-/** 默认开始时间：今天日期 + 就近 5 分钟对齐的时刻 */
-function defaultStart(): string {
-  const now = new Date()
-  let m = now.getHours() * 60 + now.getMinutes()
-  m = Math.round(m / 5) * 5
-  m = Math.max(0, Math.min(24 * 60 - 1, m))
-  return `${todayDateStr()} ${pad(Math.floor(m / 60))}:${pad(m % 60)}`
-}
-
-/** datetime 友好显示：今天/明天/昨天 或 M/D，加时刻 */
-export function fmtDateTime(s: string): string {
-  const { date, minutes } = parseDateTime(s)
-  const hhmm = `${pad(Math.floor(minutes / 60))}:${pad(minutes % 60)}`
-  if (!date) return hhmm
-  const [y, mo, d] = date.split('-').map(Number)
-  const t = new Date()
-  const today = new Date(t.getFullYear(), t.getMonth(), t.getDate())
-  const target = new Date(y, (mo || 1) - 1, d || 1)
-  const diff = Math.round((target.getTime() - today.getTime()) / 86400000)
-  const dayLabel = diff === 0 ? '今天' : diff === -1 ? '昨天' : diff === 1 ? '明天' : `${mo}/${d}`
-  return `${dayLabel} ${hhmm}`
-}
-
 export function useTaskEditor(onSaved?: (dateStr: string) => void) {
-  const { addTask, updateTask, removeTask } = useTaskStore()
+  const { addTask, updateTask, removeTask, addTasks, removeBySeries } = useTaskStore()
 
   const showEditPopup = ref(false)
   const showTemplatePopup = ref(false)
@@ -199,6 +94,202 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     return [date || todayDateStr(), pad(Math.floor(minutes / 60)), pad(minutes % 60)]
   }
 
+  // ====== 周期计划（批量添加 + 整周期删除）======
+  const showRecurringPopup = ref(false)
+  const showRStartPicker = ref(false)
+  const showREndPicker = ref(false)
+  const showRDatePicker = ref(false)
+  const rName = ref('')
+  const rColor = ref('')
+  const rStartTime = ref('08:00')
+  const rEndTime = ref('')
+  const rCycle = ref<'day' | 'week'>('day')
+  const rWeekdays = ref<number[]>([1, 2, 3, 4, 5])
+  const rSpanType = ref<'days' | 'weeks' | 'count'>('days')
+  const rSpanValue = ref(7)
+  const rStartDate = ref(todayDateStr())
+  const pendingDeleteTask = ref<TaskItem | null>(null)
+  const showSeriesDelete = ref(false)
+
+  // 仅时间选择器（不含日期）：[时, 分]
+  const timeOnlyColumns = [hourCols, minuteCols]
+  function splitTimeOnly(t: string): [string, string] {
+    const [h, m] = (t || '00:00').split(':')
+    return [pad(Number(h) || 0), pad(Number(m) || 0)]
+  }
+  const weekdayOptions = [
+    { text: '日', value: 0 },
+    { text: '一', value: 1 },
+    { text: '二', value: 2 },
+    { text: '三', value: 3 },
+    { text: '四', value: 4 },
+    { text: '五', value: 5 },
+    { text: '六', value: 6 }
+  ]
+  const spanOptions = computed(() =>
+    rCycle.value === 'day'
+      ? [
+          { text: '持续（天）', value: 'days' },
+          { text: '次数', value: 'count' }
+        ]
+      : [
+          { text: '持续（周）', value: 'weeks' },
+          { text: '次数', value: 'count' }
+        ]
+  )
+
+  function genId(): string {
+    return globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)
+  }
+  function addDays(dateStr: string, n: number): string {
+    const [y, mo, d] = dateStr.split('-').map(Number)
+    const dt = new Date(y, (mo || 1) - 1, (d || 1))
+    dt.setDate(dt.getDate() + n)
+    return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`
+  }
+  function weekdayOf(dateStr: string): number {
+    const [y, mo, d] = dateStr.split('-').map(Number)
+    return new Date(y, (mo || 1) - 1, (d || 1)).getDay()
+  }
+
+  function resetRecurringForm() {
+    rName.value = ''
+    rColor.value = ''
+    rStartTime.value = '08:00'
+    rEndTime.value = ''
+    rCycle.value = 'day'
+    rWeekdays.value = [1, 2, 3, 4, 5]
+    rSpanType.value = 'days'
+    rSpanValue.value = 7
+    rStartDate.value = todayDateStr()
+  }
+  function openRecurring() {
+    resetRecurringForm()
+    showTemplatePopup.value = false
+    showRecurringPopup.value = true
+  }
+  function onRCycleChange() {
+    if (rCycle.value === 'day') {
+      rSpanType.value = 'days'
+      rSpanValue.value = 7
+    } else {
+      rSpanType.value = 'weeks'
+      rSpanValue.value = 4
+    }
+  }
+  function onRStartConfirm(val: unknown) {
+    const v = pickValues(val)
+    rStartTime.value = `${v[0]}:${v[1]}`
+    showRStartPicker.value = false
+  }
+  function onREndConfirm(val: unknown) {
+    const v = pickValues(val)
+    rEndTime.value = `${v[0]}:${v[1]}`
+    showREndPicker.value = false
+  }
+  function onRDateConfirm(val: unknown) {
+    const v = pickValues(val)
+    rStartDate.value = String(v[0])
+    showRDatePicker.value = false
+  }
+  function clearREndTime() {
+    rEndTime.value = ''
+  }
+  /** 根据重复规则生成所有出现日期（ISO YYYY-MM-DD） */
+  function buildOccurrenceDates(): string[] {
+    const dates: string[] = []
+    const start = rStartDate.value
+    const n = Math.max(1, Math.floor(rSpanValue.value))
+    if (rCycle.value === 'day') {
+      for (let i = 0; i < n; i++) dates.push(addDays(start, i))
+    } else if (rSpanType.value === 'count') {
+      let occ = 0
+      let cur = start
+      while (occ < n && dates.length < 400) {
+        if (rWeekdays.value.includes(weekdayOf(cur))) {
+          dates.push(cur)
+          occ++
+        }
+        cur = addDays(cur, 1)
+      }
+    } else {
+      const end = addDays(start, n * 7)
+      let cur = start
+      let guard = 0
+      while (cur <= end && guard < 600) {
+        if (rWeekdays.value.includes(weekdayOf(cur))) dates.push(cur)
+        cur = addDays(cur, 1)
+        guard++
+      }
+    }
+    return dates
+  }
+  function saveRecurring() {
+    if (!rName.value.trim()) {
+      showToast('请输入计划名称')
+      return
+    }
+    if (rCycle.value === 'week' && rWeekdays.value.length === 0) {
+      showToast('请选择重复的星期')
+      return
+    }
+    const dates = buildOccurrenceDates()
+    if (dates.length === 0) {
+      showToast('未生成任何日期')
+      return
+    }
+    const seriesId = genId()
+    const tasks: TaskItem[] = dates.map((date) => ({
+      id: genId(),
+      name: rName.value.trim(),
+      startTime: `${date} ${rStartTime.value}`,
+      endTime: rEndTime.value ? `${date} ${rEndTime.value}` : undefined,
+      priority: 'medium',
+      color: rColor.value || undefined,
+      template: 'recurring',
+      seriesId,
+      customEnd: true,
+      isHighlighted: false
+    }))
+    addTasks(tasks)
+    showToast(`已新增 ${tasks.length} 项`)
+    showRecurringPopup.value = false
+    onSaved?.(rStartDate.value)
+  }
+
+  async function deleteTask(task: TaskItem) {
+    if (task.seriesId) {
+      pendingDeleteTask.value = task
+      showSeriesDelete.value = true
+      return
+    }
+    try {
+      await showConfirmDialog({ title: '删除确认', message: `确定删除「${task.name || '该事务'}」吗？` })
+      removeTask(task.id)
+      showToast('已删除')
+    } catch {
+      /* 取消 */
+    }
+  }
+  function confirmDeleteOne() {
+    const t = pendingDeleteTask.value
+    if (!t) return
+    removeTask(t.id)
+    showToast('已删除本次')
+    showSeriesDelete.value = false
+    showEditPopup.value = false
+    pendingDeleteTask.value = null
+  }
+  function confirmDeleteSeries() {
+    const t = pendingDeleteTask.value
+    if (!t || !t.seriesId) return
+    removeBySeries(t.seriesId)
+    showToast('已删除整个周期')
+    showSeriesDelete.value = false
+    showEditPopup.value = false
+    pendingDeleteTask.value = null
+  }
+
   function resetEditForm() {
     editForm.value = {
       name: '',
@@ -228,6 +319,10 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
   }
 
   function pickTemplate(t: TaskTemplate) {
+    if (t.id === 'recurring') {
+      openRecurring()
+      return
+    }
     resetEditForm()
     editingTask.value = null
     editForm.value.name = t.name
@@ -391,16 +486,6 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     onSaved?.(dateOf(ef.startTime) || todayDateStr())
   }
 
-  async function deleteTask(task: TaskItem) {
-    try {
-      await showConfirmDialog({ title: '删除确认', message: `确定删除「${task.name || '该事务'}」吗？` })
-      removeTask(task.id)
-      showToast('已删除')
-    } catch {
-      /* 取消 */
-    }
-  }
-
   // 铺路「按时间」显示的时长文案
   const paveDurationText = computed(() => {
     const pm = editForm.value.pavingMode
@@ -423,6 +508,27 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     showPavingPicker,
     timeColumns,
     paveDurationText,
+    // 周期计划
+    showRecurringPopup,
+    showRStartPicker,
+    showREndPicker,
+    showRDatePicker,
+    rName,
+    rColor,
+    rStartTime,
+    rEndTime,
+    rCycle,
+    rWeekdays,
+    rSpanType,
+    rSpanValue,
+    rStartDate,
+    dateCols,
+    timeOnlyColumns,
+    splitTimeOnly,
+    weekdayOptions,
+    spanOptions,
+    showSeriesDelete,
+    pendingDeleteTask,
     // 方法
     splitTime,
     openAdd,
@@ -434,6 +540,15 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     clearEndTime,
     openEdit,
     saveTask,
-    deleteTask
+    deleteTask,
+    openRecurring,
+    onRCycleChange,
+    onRStartConfirm,
+    onREndConfirm,
+    onRDateConfirm,
+    clearREndTime,
+    saveRecurring,
+    confirmDeleteOne,
+    confirmDeleteSeries
   }
 }

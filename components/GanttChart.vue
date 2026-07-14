@@ -4,13 +4,18 @@ import { Icon, Popup, Picker } from 'vant'
 import InfiniteScroll from './InfiniteScroll.vue'
 import TemplatePicker from './TemplatePicker.vue'
 import TaskEditDialog from './TaskEditDialog.vue'
+import RecurringPlanDialog from './RecurringPlanDialog.vue'
 import ExportDialog from './ExportDialog.vue'
 import ExportPreview from './ExportPreview.vue'
-import { useGanttView, CELL_PX, MINUTES_PER_DAY } from '@/composables/useGanttView'
+import TaskTableDialog from './TaskTableDialog.vue'
+import { useGanttView } from '@/composables/useGanttView'
 import { useTaskStore } from '@/composables/useTaskStore'
 import { useTaskEditor } from '@/composables/useTaskEditor'
 import { useGanttExport } from '@/composables/useGanttExport'
 import { dateOf } from '@/utils/ganttLayout'
+import { nowAbsMinutes } from '@/utils/taskTime'
+import { formatTime, PHASE_GRADIENT, buildGridStyle, buildTimeLabels } from '@/utils/ganttChartStyle'
+import { tint } from '@/utils/ganttCanvasDraw'
 import { useAuth } from '@/composables/useAuth'
 
 // 每格间隔（可配置）
@@ -29,7 +34,7 @@ const intervalLabel = computed(
 )
 const intervalChip = computed(() => {
   const v = interval.value
-  if (v < 60) return `${v}分`
+  if (v < 60) return `${v}分钟`
   if (v === 60) return '1时'
   if (v === 720) return '12时'
   if (v === 1440) return '24时'
@@ -43,6 +48,7 @@ const {
   view,
   allTasks,
   nowTop,
+  showNowLine,
   showBackToNow,
   scrollRef,
   plotRef,
@@ -59,6 +65,22 @@ const {
   prevDay,
   nextDay
 } = useGanttView(interval)
+
+// 底部统计：按当前时间将任务分为 进行中 / 未进行 / 已完成（依赖 nowTop 每分钟刷新）
+const taskStats = computed(() => {
+  nowTop.value // 建立依赖，使统计随当前时间每分钟更新
+  const now = nowAbsMinutes()
+  let doing = 0
+  let todo = 0
+  let done = 0
+  for (const t of allTasks.value) {
+    if (t.end < now) done++
+    else if (t.start <= now) doing++
+    else todo++
+  }
+  return { doing, todo, done }
+})
+
 
 // 保存任务后：把视图跳转到该任务所在日期
 function offsetForDate(dateStr: string): number {
@@ -174,56 +196,14 @@ async function pickDay(c: { offset: number }) {
 void scrollRef
 void plotRef
 
-// 网格背景：每 CELL_PX 画一条横线
-const gridStyle = computed(() => ({
-  backgroundImage: 'linear-gradient(to bottom, #ebedf0 0 1px, transparent 1px)',
-  backgroundSize: `100% ${CELL_PX}px`,
-  backgroundRepeat: 'repeat-y' as const
-}))
-
-// 时间轴标签：间隔较密时用 30 分钟作为标签步长，避免拥挤
+// 时间轴标签步长：间隔较密时用 30 分钟作为标签步长，避免拥挤
 const labelStep = computed(() => (interval.value >= 30 ? interval.value : 30))
-const timeLabels = computed(() => {
-  const arr: { top: number; text: string; boundary: boolean }[] = []
-  // 每段只渲染 [0, 1440) 的标签；m=0 即「当天顶部 / 前一天 24:00」边界，
-  // 用日期代替时间，避免相邻两天 0:00 与 24:00 文字重叠
-  for (let m = 0; m < MINUTES_PER_DAY; m += labelStep.value) {
-    arr.push({ top: m * pxPerMin.value, text: formatTime(m), boundary: m === 0 })
-  }
-  return arr
-})
-function formatTime(mins: number): string {
-  const h = Math.floor(mins / 60)
-  const m = mins % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-}
-// 将色块颜色转为带透明度的背景（用于卡片 10% 底色）
-function tint(color: string, alpha: number): string {
-  const c = (color || '').replace('#', '')
-  if (/^[0-9a-fA-F]{6}$/.test(c)) {
-    const r = parseInt(c.slice(0, 2), 16)
-    const g = parseInt(c.slice(2, 4), 16)
-    const b = parseInt(c.slice(4, 6), 16)
-    return `rgba(${r},${g},${b},${alpha})`
-  }
-  if (/^[0-9a-fA-F]{3}$/.test(c)) {
-    const r = parseInt(c[0] + c[0], 16)
-    const g = parseInt(c[1] + c[1], 16)
-    const b = parseInt(c[2] + c[2], 16)
-    return `rgba(${r},${g},${b},${alpha})`
-  }
-  return color
-}
+// 网格背景与时刻标签由 ganttChartStyle 提供（展示工具外置，降低组件复杂度）
+const gridStyle = computed(() => buildGridStyle())
+const timeLabels = computed(() => buildTimeLabels(pxPerMin.value, labelStep.value))
 
-// 深夜/浅夜 平滑渐变（仅用于 Y 轴时间轴背景），半透明以便透出时刻线
-const PHASE_GRADIENT =
-  'linear-gradient(to bottom,' +
-  'rgba(120,130,190,0.10) 0%,' +
-  'rgba(46,54,92,0.22) 4.6%,' +
-  'rgba(46,54,92,0.22) 32.6%,' +
-  'rgba(120,130,190,0.10) 37%,' +
-  'rgba(120,130,190,0.0) 39.5%,' +
-  'rgba(120,130,190,0.0) 100%)'
+// 全部事务表格浮窗
+const showTaskTable = ref(false)
 
 // 间隔选择弹窗
 const showIntervalPicker = ref(false)
@@ -240,6 +220,10 @@ function onIntervalConfirm(val: unknown) {
   showIntervalPicker.value = false
   updateBackToNow()
 }
+
+// 对外暴露任务状态统计，供页面头部展示
+defineExpose({ taskStats })
+
 </script>
 
 <template>
@@ -351,6 +335,9 @@ function onIntervalConfirm(val: unknown) {
                         :style="{ top: tk.top + 'px' }"
                         >{{ tk.count }}</span
                       >
+                      <span v-if="t.task.template === 'transfer'" class="task-flag">🚩</span>
+                      <span v-if="t.task.template === 'build'" class="task-flag">🔧</span>
+                      <span v-if="t.task.template === 'recurring'" class="task-flag">♻</span>
                     </div>
                     <div
                       class="g-col"
@@ -366,10 +353,15 @@ function onIntervalConfirm(val: unknown) {
                           t.task.pavingMode === 'auto' ? '自动' : '接力'
                         }}</span>
                       </div>
+                      <div v-if="t.task.description" class="col-desc">{{ t.task.description }}</div>
                     </div>
                   </template>
                 </div>
               </div>
+            </div>
+            <!-- 当前时间红线：仅在真实今天显示，随当前时间每分钟移动（导出图不绘制此线） -->
+            <div v-if="showNowLine" class="now-line" :style="{ top: nowTop + 'px' }">
+              <span class="now-line-label">现在</span>
             </div>
           </div>
         </template>
@@ -396,20 +388,18 @@ function onIntervalConfirm(val: unknown) {
 
     <!-- 底部统计栏 + 中间圆形加号 -->
     <div class="stats-bar">
-      <div class="stat-group">
-        <div class="stat-item">
-          <Icon name="todo-list-o" />
-          <span>共 {{ allTasks.length }} 项</span>
-        </div>
-        <span v-if="!canEdit" class="readonly-tag">只读</span>
+      <div class="stat-item stat-clickable" @click="showTaskTable = true">
+        <Icon name="todo-list-o" />
+        <span>共 {{ allTasks.length }} 项</span>
       </div>
+      <span v-if="!canEdit" class="readonly-tag">只读</span>
       <div class="fab-plus" :class="{ disabled: !canEdit }" @click="canEdit && editor.openAdd()">
         <Icon name="plus" size="24" color="#fff" />
       </div>
       <div class="stat-group">
         <div class="stat-item" @click="showIntervalPicker = true">
-          <Icon name="underway-o" />
           <span>每格 {{ intervalChip }}</span>
+          <Icon name="underway-o" />
         </div>
       </div>
     </div>
@@ -454,8 +444,12 @@ function onIntervalConfirm(val: unknown) {
     <!-- 子组件：模板库 / 编辑 / 导出设置 / 预览 -->
     <TemplatePicker v-model:show="showTemplatePopup" @pick="editor.pickTemplate" />
     <TaskEditDialog />
+    <RecurringPlanDialog />
     <ExportDialog />
     <ExportPreview />
+
+    <!-- 全部事务表格浮窗（入口：底部事务数量统计） -->
+    <TaskTableDialog v-model:show="showTaskTable" />
   </div>
 </template>
 
@@ -616,6 +610,29 @@ function onIntervalConfirm(val: unknown) {
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+/* 当前时间红线：贯穿时间轴与绘图区的红色虚线 */
+.now-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1px dashed #ee0a24;
+  z-index: 6;
+  pointer-events: none;
+}
+.now-line-label {
+  position: absolute;
+  left: 2px;
+  top: -8px;
+  font-size: 9px;
+  line-height: 14px;
+  color: #fff;
+  background: #ee0a24;
+  padding: 0 4px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 /* 右侧绘图区 */
 .plot {
   flex: 1;
@@ -659,6 +676,16 @@ function onIntervalConfirm(val: unknown) {
   border-radius: 6px 0 0 6px;
   opacity: 0.95;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+.task-flag {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 13px;
+  line-height: 1;
+  filter: brightness(0) invert(1);
+  pointer-events: none;
 }
 .pave-tick {
   position: absolute;
@@ -726,7 +753,7 @@ function onIntervalConfirm(val: unknown) {
 .col-name {
   flex: 1 1 100%;
   min-width: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: #323233;
   line-height: 1.35;
@@ -738,6 +765,14 @@ function onIntervalConfirm(val: unknown) {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.col-desc {
+  font-size: 10px;
+  line-height: 1.3;
+  color: #646566;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .col-pave {
   flex-shrink: 0;
   font-size: 10px;
@@ -748,6 +783,11 @@ function onIntervalConfirm(val: unknown) {
   border-radius: 8px;
   line-height: 16px;
 }
+.col-repeat {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 16px;
+}
 
 /* 底部统计栏 */
 .stats-bar {
@@ -756,29 +796,44 @@ function onIntervalConfirm(val: unknown) {
   left: 50%;
   transform: translateX(-50%);
   width: 80%;
-  max-width: 456px;
+  max-width: 360px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 5px 16px;
+  justify-content: center;
+  padding: 0 16px;
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(8px);
   border-radius: 28px;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
   z-index: 99;
+  font-size: 14px;
 }
 .stat-group {
   display: flex;
-  align-items: center;
+  justify-content: end;
   gap: 16px;
+  flex: 1;
+  align-items: center;
 }
 .stat-item {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
-  color: #646566;
-  white-space: nowrap;
+}
+.stat-clickable {
+  cursor: pointer;
+  border-radius: 14px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: start;
+  width: 0;
+  box-sizing: border-box;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+.stat-clickable:active {
+  background: #f2f3f5;
+  transform: scale(0.96);
 }
 .readonly-tag {
   font-size: 10px;

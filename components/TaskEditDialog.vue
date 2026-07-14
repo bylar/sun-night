@@ -120,15 +120,6 @@
         :border="false"
       />
 
-      <Field
-        v-if="!editForm.pavingMode && editForm.template !== 'siege' && editForm.template !== 'ally'"
-        v-model="editForm.count"
-        label="计数"
-        type="digit"
-        placeholder="右侧数字（可选）"
-        :border="false"
-      />
-
       <Cell title="高亮重点" center>
         <template #right-icon>
           <Switch v-model="editForm.isHighlighted" size="20" />
@@ -175,13 +166,25 @@
         title="预设铺路"
       />
     </Popup>
+    <!-- 周期计划删除：选择删除范围 -->
+    <Popup v-model:show="showSeriesDelete" position="bottom" round>
+      <div class="series-del">
+        <h3>删除周期计划</h3>
+        <p class="series-tip">该事务属于一个周期计划，请选择删除范围：</p>
+        <Button block type="primary" @click="confirmDeleteOne">仅删除本次</Button>
+        <Button block type="danger" @click="confirmDeleteSeries">删除整个周期</Button>
+        <Button block plain @click="showSeriesDelete = false">取消</Button>
+      </div>
+    </Popup>
   </Popup>
 </template>
 
 <script setup lang="ts">
 import { inject, ref, type Ref } from 'vue'
 import { Popup, Field, Cell, Button, Switch, Picker } from 'vant'
-import { COLOR_PRESETS, pavingOptions, useTaskEditor, fmtDateTime } from '@/composables/useTaskEditor'
+import { useTaskEditor } from '@/composables/useTaskEditor'
+import { COLOR_PRESETS, pavingOptions } from '@/utils/taskTemplates'
+import { fmtDateTime } from '@/utils/taskTime'
 
 const editor = inject<ReturnType<typeof useTaskEditor>>('taskEditor')!
 // 权限：viewer 只读，禁用保存 / 删除（防御性，主入口已在 GanttChart 拦截）
@@ -203,7 +206,10 @@ const {
   onCountValueInput,
   clearEndTime,
   saveTask,
-  deleteTask
+  deleteTask,
+  showSeriesDelete,
+  confirmDeleteOne,
+  confirmDeleteSeries
 } = editor
 </script>
 
@@ -250,5 +256,24 @@ const {
   position: relative;
   z-index: 1;
   box-shadow: 0 0 0 2px #1989fa, inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+/* 周期删除弹窗 */
+.series-del {
+  padding: 18px 16px 22px;
+}
+.series-del h3 {
+  font-size: 16px;
+  text-align: center;
+  margin-bottom: 8px;
+}
+.series-tip {
+  font-size: 12px;
+  color: #969799;
+  text-align: center;
+  margin-bottom: 16px;
+}
+.series-del .van-button {
+  margin-top: 12px;
 }
 </style>

@@ -6,6 +6,7 @@ import { ref, computed, shallowRef } from 'vue'
 import { showToast } from 'vant'
 import { useTaskStore } from '@/composables/useTaskStore'
 import { buildGanttCanvas, saveCanvasAsPng } from '@/utils/exportImage'
+import { hasTasksInRange } from '@/utils/ganttCanvasDraw'
 
 // vant 4 Picker @confirm 兼容取值
 function pickValues(val: unknown): (string | number)[] {
@@ -66,9 +67,9 @@ export function useGanttExport(
   const exStart = ref<Date>(dateAt(0, 0))
   const exEnd = ref<Date>(dateAt(0, 1439))
 
-  // 时间选择器列：天 + 时 + 分
-  const hourCols = Array.from({ length: 24 }, (_, i) => pad2(i))
-  const minuteCols = Array.from({ length: 60 }, (_, i) => pad2(i))
+  // 时间选择器列：天 + 时 + 分（vant 4 Picker 需 {text,value} 对象格式，纯字符串列会导致 confirm 取不到值 → NaN）
+  const hourCols = Array.from({ length: 24 }, (_, i) => ({ text: pad2(i), value: pad2(i) }))
+  const minuteCols = Array.from({ length: 60 }, (_, i) => ({ text: pad2(i), value: pad2(i) }))
   const dayOptions = computed(() => {
     const arr: { text: string; value: number }[] = []
     for (let o = -2; o <= 10; o++) arr.push({ text: titleForOffset(o), value: o })
@@ -93,14 +94,14 @@ export function useGanttExport(
     const v = pickValues(val)
     const off = Number(v[0])
     const min = Number(v[1]) * 60 + Number(v[2] ?? 0)
-    exStart.value = dateAt(off, min)
+    if (Number.isFinite(off) && Number.isFinite(min)) exStart.value = dateAt(off, min)
     showExStartPicker.value = false
   }
   function onExEndConfirm(val: unknown) {
     const v = pickValues(val)
     const off = Number(v[0])
     const min = Number(v[1]) * 60 + Number(v[2] ?? 0)
-    exEnd.value = dateAt(off, min)
+    if (Number.isFinite(off) && Number.isFinite(min)) exEnd.value = dateAt(off, min)
     showExEndPicker.value = false
   }
   function onExScaleConfirm(val: unknown) {
@@ -122,6 +123,10 @@ export function useGanttExport(
     const endAbs = eOff * 1440 + minOf(exEnd.value)
     if (endAbs <= startAbs) {
       showToast('结束时间需晚于开始时间')
+      return
+    }
+    if (!hasTasksInRange(days.value, startAbs, endAbs)) {
+      showToast('所选时间范围内没有任务，请重新选择范围')
       return
     }
     const canvas = buildGanttCanvas({

@@ -17,7 +17,7 @@
 
 <script setup lang="ts">
 import { Popup, Icon } from 'vant'
-import { TEMPLATES, type TaskTemplate } from '@/composables/useTaskEditor'
+import { TEMPLATES, type TaskTemplate } from '@/utils/taskTemplates'
 
 defineProps<{ show: boolean }>()
 const emit = defineEmits<{

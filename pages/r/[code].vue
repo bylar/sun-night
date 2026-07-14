@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import { Icon } from 'vant'
 import GanttChart from '@/components/GanttChart.vue'
 import ShareManager from '@/components/ShareManager.vue'
@@ -88,6 +88,16 @@ onMounted(async () => {
   await enter()
 })
 onBeforeUnmount(stopSSE)
+
+// 读取甘特图组件暴露的任务状态统计（当前/未来/结束）
+const ganttRef = ref()
+const stats = computed(() => {
+  const exposed = ganttRef.value as unknown as { taskStats?: { value?: { doing: number; todo: number; done: number } } } | null
+  const t = exposed?.taskStats
+  const val = t && 'value' in t ? t.value : ((t as unknown) as { doing: number; todo: number; done: number } | undefined)
+  return val ?? { doing: 0, todo: 0, done: 0 }
+})
+
 </script>
 
 <template>
@@ -109,6 +119,11 @@ onBeforeUnmount(stopSSE)
         <div class="bar-room">
           <span class="bar-name">{{ currentRoom.name }}</span>
           <span class="bar-code">#{{ currentRoom.code }}</span>
+          <span class="hd-stats">
+            <i class="dot doing"></i>{{ stats.doing }} 当前
+            <i class="dot todo"></i>{{ stats.todo }} 未来
+            <i class="dot done"></i>{{ stats.done }} 结束
+          </span>
           <span v-if="!canEdit" class="readonly-tag">只读</span>
         </div>
         <button
@@ -122,7 +137,7 @@ onBeforeUnmount(stopSSE)
         <span v-else class="bar-guest">访客·{{ currentRoom.guestName }}</span>
       </header>
 
-      <GanttChart />
+      <GanttChart ref="ganttRef" />
       <ShareManager v-model:show="showShares" />
     </template>
   </div>
@@ -185,6 +200,34 @@ onBeforeUnmount(stopSSE)
 }
 .bar-code {
   font-size: 11px;
+  color: #969799;
+}
+.hd-stats {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-left: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #646566;
+  white-space: nowrap;
+}
+.hd-stats .dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 3px;
+  vertical-align: middle;
+}
+.hd-stats .doing {
+  color: #07c160;
+}
+.hd-stats .todo {
+  color: #1989fa;
+}
+.hd-stats .done {
   color: #969799;
 }
 .readonly-tag {

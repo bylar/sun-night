@@ -99,6 +99,7 @@ export const tasks = sqliteTable('tasks', {
   color: text('color'),
   icon: text('icon'),
   template: text('template').$type<TaskTemplateId>(),
+  seriesId: text('series_id'),
   durationMin: integer('duration_min'),
   countMode: text('count_mode').$type<'count' | 'time'>(),
   countValue: integer('count_value'),

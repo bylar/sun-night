@@ -88,6 +88,7 @@ const DDL = [
     color TEXT,
     icon TEXT,
     template TEXT,
+    series_id TEXT,
     duration_min INTEGER,
     count_mode TEXT,
     count_value INTEGER,
@@ -98,6 +99,11 @@ const DDL = [
   )`
 ]
 
+// 为已有数据库补齐后续新增的列（幂等：列已存在时忽略报错）
+const ALTERS = [
+  `ALTER TABLE tasks ADD COLUMN series_id TEXT`
+]
+
 let schemaReady: Promise<void> | null = null
 
 /** 确保表已创建（幂等，仅首次执行一次） */
@@ -106,6 +112,13 @@ export function ready(): Promise<void> {
     schemaReady = (async () => {
       for (const sql of DDL) {
         await client.execute(sql)
+      }
+      for (const sql of ALTERS) {
+        try {
+          await client.execute(sql)
+        } catch {
+          /* 列已存在则忽略 */
+        }
       }
     })()
   }

@@ -15,6 +15,9 @@ export type TaskTemplateId =
   | 'auto-pave' // 自动铺路（填格数 / 时间互转）
   | 'relay-pave' // 接力铺路（填格数 / 时间互转）
   | 'custom' // 自定义事务
+  | 'transfer' // 调动（普通事务，色块内带白色 🚩）
+  | 'build' // 建造（普通事务，色块内带白色 🔧）
+  | 'recurring' // 周期计划（批量生成，同一 seriesId 关联）
 
 /** 房间访问模式：盟主本身（owner）或分享链接匿名访客（guest） */
 export type AccessMode = 'owner' | 'guest'
@@ -103,6 +106,7 @@ export interface TaskItem {
   icon?: string // Vant图标名（模板默认图标）
   pavingMode?: PavingMode // 预设铺路模式（可选）
   template?: TaskTemplateId // 来源模板（用于默认命名 / 颜色提示，不参与渲染）
+  seriesId?: string // 周期计划关联 id（同一批量生成共享，用于整周期删除）
   durationMin?: number // 固定/默认时长（分钟），用于模板自动设定 endTime
   minDurationMin?: number // 最短时长（分钟），如宣战最小 1h
   stepMin?: number // 时间粒度（分钟），如宣战 10 分钟
