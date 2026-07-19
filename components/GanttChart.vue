@@ -25,6 +25,9 @@ const INTERVAL_OPTIONS = [
   { text: '10分钟', value: 10 },
   { text: '30分钟', value: 30 },
   { text: '1小时', value: 60 },
+  { text: '2小时', value: 120 },
+  { text: '4小时', value: 240 },
+  { text: '6小时', value: 360 },
   { text: '12小时', value: 720 },
   { text: '24小时', value: 1440 }
 ]
@@ -104,6 +107,60 @@ provide('ganttExport', exp)
 const auth = useAuth()
 const canEdit = auth.canEdit
 provide('canEdit', canEdit)
+
+// ====== 时间轴长按 3s 唤起以该时刻为开始时间的新建事务 ======
+const MINUTES_PER_DAY = 1440
+let axisPressTimer: number | null = null
+let axisPressTarget: HTMLElement | null = null
+let axisPressStartY = 0
+
+/** 由时间轴内相对 y（内容坐标）映射出 YYYY-MM-DD HH:mm（按当前每格粒度对齐） */
+function axisTimeAtY(y: number): string | null {
+  const segs = view.value.segments
+  for (const s of segs) {
+    if (y >= s.dayTop && y < s.dayTop + s.dayHeight) {
+      let mins = Math.floor((y - s.dayTop) / pxPerMin.value)
+      mins = Math.max(0, Math.min(MINUTES_PER_DAY - 1, mins))
+      // 取所按格子上方的时刻：向下对齐到每格粒度（floor），而非四舍五入
+      const step = interval.value
+      mins = Math.floor(mins / step) * step
+      const p = (n: number) => String(n).padStart(2, '0')
+      return `${s.date} ${p(Math.floor(mins / 60))}:${p(mins % 60)}`
+    }
+  }
+  return null
+}
+
+function startAxisPress(e: PointerEvent) {
+  if (!canEdit.value) return
+  axisPressStartY = e.clientY
+  axisPressTarget = e.currentTarget as HTMLElement
+  if (axisPressTimer !== null) clearTimeout(axisPressTimer)
+  // 长按 3s 以上才触发，避免误触
+  axisPressTimer = window.setTimeout(() => {
+    if (!axisPressTarget) return
+    const rect = axisPressTarget.getBoundingClientRect()
+    const time = axisTimeAtY(axisPressStartY - rect.top)
+    if (time) editor.openAddAtTime(time)
+    axisPressTimer = null
+    axisPressTarget = null
+  }, 3000)
+}
+
+function cancelAxisPress() {
+  if (axisPressTimer !== null) {
+    clearTimeout(axisPressTimer)
+    axisPressTimer = null
+    axisPressTarget = null
+  }
+}
+
+function onAxisPointerMove(e: PointerEvent) {
+  // 长按过程中移动超过阈值则取消
+  if (axisPressTimer !== null && Math.abs(e.clientY - axisPressStartY) > 12) {
+    cancelAxisPress()
+  }
+}
 
 // ====== 日历选天 ======
 const taskStore = useTaskStore()
@@ -253,8 +310,16 @@ defineExpose({ taskStats })
       >
         <template #default="{ contentHeight: ch }">
           <div class="timeline-inner" :style="{ height: ch + 'px' }">
-            <!-- 左侧时间轴 -->
-            <div class="time-axis">
+            <!-- 左侧时间轴（长按 3s 在该时刻新建事务） -->
+            <div
+              class="time-axis"
+              @pointerdown="startAxisPress"
+              @pointerup="cancelAxisPress"
+              @pointerleave="cancelAxisPress"
+              @pointercancel="cancelAxisPress"
+              @pointermove="onAxisPointerMove"
+              @contextmenu.prevent="cancelAxisPress"
+            >
               <template v-for="seg in view.segments" :key="'seg' + seg.dayIndex">
                 <div
                   class="phase-bg"
@@ -534,6 +599,10 @@ defineExpose({ taskStats })
   position: relative;
   background: rgba(250, 250, 250, 0.85);
   border-right: 1px solid #ebedf0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: pan-y;
 }
 /* 时段状态：深夜/浅夜 平滑渐变（仅 Y 轴，半透明，置于最底层） */
 .phase-bg {

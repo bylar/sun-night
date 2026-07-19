@@ -48,3 +48,12 @@ export async function listRoomsByOwner(ownerId: string): Promise<{ code: string;
     shareCount: Number(r.share_count)
   }))
 }
+
+/** 生成不重复的房间码：ALLY + 5 位大写字母数字 */
+export async function genUniqueCode(): Promise<string> {
+  for (let i = 0; i < 8; i++) {
+    const c = 'ALLY' + Math.random().toString(36).slice(2, 7).toUpperCase()
+    if (!(await getRoomByCode(c))) return c
+  }
+  return 'ALLY' + Date.now().toString(36).toUpperCase()
+}

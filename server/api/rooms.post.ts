@@ -1,6 +1,6 @@
 import { readBody, createError } from 'h3'
 import { getBearerToken, getAdminFromSession } from '~/server/utils/auth'
-import { getUserBySession, getUserById, createRoom, getRoomByCode } from '~/server/utils/db'
+import { getUserBySession, getUserById, createRoom, getRoomByCode, genUniqueCode } from '~/server/utils/db'
 import { normalizeCode } from '~/server/utils/code'
 
 /** 创建房间：盟主创建归属自己；管理员可指定 ownerId 为他人创建 */
@@ -48,12 +48,3 @@ export default defineEventHandler(async (event) => {
     }
   }
 })
-
-/** 生成不重复的房间码：ALLY + 5 位大写字母数字 */
-async function genUniqueCode(): Promise<string> {
-  for (let i = 0; i < 8; i++) {
-    const c = 'ALLY' + Math.random().toString(36).slice(2, 7).toUpperCase()
-    if (!(await getRoomByCode(c))) return c
-  }
-  return 'ALLY' + Date.now().toString(36).toUpperCase()
-}

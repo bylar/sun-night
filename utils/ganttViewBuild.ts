@@ -8,6 +8,8 @@ import type { DayData, TaskItem } from '@/types/gantt'
 
 // ====== 常量 ======
 export const MINUTES_PER_DAY = 1440
+// 宣战（declare）结束后自动追加的「宣战中」纯色块时长（分钟），需计入区间计算避免被覆盖
+export const DECLARE_TRAIL_MIN = 60
 // 每个「格子」的像素高度（恒定），格子间隔由 interval 控制，pxPerMin = CELL_PX / interval
 export const CELL_PX = 48
 // 每列宽度按内容自然决定（不再限制同屏最多 3 列）；列数过多时由 .plot 横向滚动查看
@@ -113,6 +115,8 @@ export interface DaySegment {
   tasks: PositionedTask[]
   maxTotal: number
   colW: number
+  /** 该段对应的具体日期 YYYY-MM-DD（长按时间轴新建事务时使用） */
+  date: string
   dateLabel: string
   cells: CellInfo[]
 }
@@ -216,6 +220,7 @@ function buildSegment(
   const day = input.days[dataIndex]
   const dt = dateForOffset(offset)
   const dayStartAbs = (input.todayIndex + offset) * MINUTES_PER_DAY
+  const segDate = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
   const seg: DaySegment = {
     dayIndex: offset,
     day: day
@@ -226,6 +231,7 @@ function buildSegment(
     tasks: [],
     maxTotal: 1,
     colW: 60,
+    date: segDate,
     dateLabel: monthDayForOffset(offset),
     cells: []
   }
@@ -233,7 +239,11 @@ function buildSegment(
   const dayRanges: [number, number][] = []
   for (const f of frags) {
     const visTop = Math.max(0, f.aStart - dayStartAbs)
-    const visBottom = Math.min(MINUTES_PER_DAY, f.aEnd - dayStartAbs)
+    let visBottom = Math.min(MINUTES_PER_DAY, f.aEnd - dayStartAbs)
+    // 宣战额外「宣战中」色块占用结束后 60 分钟，需一并计入左侧轴任务数（跨天部分次日自动统计）
+    if (f.task.template === 'declare' && f.task.endTime) {
+      visBottom = Math.min(MINUTES_PER_DAY, visBottom + DECLARE_TRAIL_MIN)
+    }
     if (visBottom > visTop) dayRanges.push([visTop, visBottom])
   }
   seg.cells = buildCells(dayRanges, input.interval >= 30 ? input.interval : 30, pPerMin)
@@ -284,7 +294,10 @@ export function buildView(input: BuildViewInput): ViewResult {
         const MIN_CARD_PX = 48
         const realHpx = dur * pxPerMin
         const padMin = Math.max(0, (MIN_CARD_PX - realHpx) / pxPerMin)
-        globalItems.push({ id: t.id, start: aStart, end: aEnd + padMin })
+        // 宣战额外「宣战中」色块占用结束后 60 分钟，需把这段时间也计入全局区间：
+        // 否则该时间段内的其它任务会被轨道分配判为不重叠、在同轨道覆盖掉 trail 色块。
+        const trailMin = t.template === 'declare' && t.endTime ? DECLARE_TRAIL_MIN : 0
+        globalItems.push({ id: t.id, start: aStart, end: aEnd + padMin + trailMin })
         // 任务覆盖的「相对今天」偏移范围
         const startOff = Math.floor(aStart / MINUTES_PER_DAY) - ti
         const endOff = Math.floor(aEnd / MINUTES_PER_DAY) - ti

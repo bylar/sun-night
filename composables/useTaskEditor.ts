@@ -165,6 +165,12 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
   }
   function openRecurring() {
     resetRecurringForm()
+    // 由「AFTER」唤起：预填周期起始日期与时刻为上一事务的结束时间
+    if (presetStartTime.value) {
+      rStartDate.value = dateOf(presetStartTime.value) || todayDateStr()
+      rStartTime.value = (presetStartTime.value.split(' ')[1] || '08:00')
+      presetStartTime.value = ''
+    }
     showTemplatePopup.value = false
     showRecurringPopup.value = true
   }
@@ -312,9 +318,26 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     }
   }
 
+  // 预填开始时间：当由「AFTER」唤起新增时，新事务开始时间 = 当前事务结束时间
+  const presetStartTime = ref('')
+
+  /** 在当前事务之后新增：关闭编辑弹窗，唤起模板选择流程，并预填开始时间 */
+  function addAfter(task: TaskItem) {
+    // 瞬时任务无结束时间则退化为开始时间
+    presetStartTime.value = task.endTime || task.startTime
+    showEditPopup.value = false
+    showTemplatePopup.value = true
+  }
+
   function openAdd() {
     editingTask.value = null
     resetEditForm()
+    showTemplatePopup.value = true
+  }
+
+  /** 在指定时间新建事务：以给定时刻作为预填开始时间，唤起模板选择流程 */
+  function openAddAtTime(time: string) {
+    presetStartTime.value = time
     showTemplatePopup.value = true
   }
 
@@ -325,6 +348,11 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     }
     resetEditForm()
     editingTask.value = null
+    // 由「AFTER」唤起：预填开始时间为上一事务的结束时间
+    if (presetStartTime.value) {
+      editForm.value.startTime = presetStartTime.value
+      presetStartTime.value = ''
+    }
     editForm.value.name = t.name
     editForm.value.color = t.color
     editForm.value.icon = t.icon
@@ -532,6 +560,8 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     // 方法
     splitTime,
     openAdd,
+    addAfter,
+    openAddAtTime,
     pickTemplate,
     onStartConfirm,
     onEndConfirm,

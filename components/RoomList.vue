@@ -5,7 +5,10 @@
         <Icon name="manager-o" />
         <span>{{ auth.currentUser.value?.username }}</span>
       </div>
-      <button class="bar-btn" type="button" @click="logout">退出</button>
+      <div class="bar-actions">
+        <button class="bar-btn" type="button" @click="showImport = true">导入</button>
+        <button class="bar-btn" type="button" @click="logout">退出</button>
+      </div>
     </header>
 
     <h2 class="title">我的同盟</h2>
@@ -21,6 +24,12 @@
         <span class="r-code">#{{ r.code }}</span>
       </div>
       <span class="r-shares">{{ r.shareCount }} 条分享</span>
+      <Icon
+        name="down"
+        class="r-export"
+        title="导出"
+        @click.stop="exportRoom(r.code, r.name)"
+      />
       <Icon
         name="delete-o"
         class="r-del"
@@ -38,6 +47,23 @@
       <Field v-model="newCode" label="房间码" placeholder="留空自动生成（如 ALLY1A2B3）" :border="false" />
       <Button block type="primary" :loading="creating" @click="create">创建并进入</Button>
     </Popup>
+
+    <!-- 导出房间：展示 base64 内容 -->
+    <Popup v-model:show="showExport" position="bottom" round :style="{ padding: '20px 16px 24px' }">
+      <h3 class="pop-title">导出房间：{{ exportName }}</h3>
+      <p class="pop-hint">复制下方 base64 内容，可在其他账号「导入」该房间的全部事务（不含房间标题等元信息）。</p>
+      <Field v-model="exportData" type="textarea" rows="6" readonly :border="false" />
+      <Button block type="primary" @click="copyExport">复制</Button>
+    </Popup>
+
+    <!-- 导入房间：粘贴 base64 数据 -->
+    <Popup v-model:show="showImport" position="bottom" round :style="{ padding: '20px 16px 24px' }">
+      <h3 class="pop-title">导入房间</h3>
+      <Field v-model="importName" label="房间名" placeholder="留空默认「导入的同盟」" :border="false" />
+      <Field v-model="importCode" label="房间码" placeholder="留空自动生成" :border="false" />
+      <Field v-model="importData" type="textarea" rows="8" label="数据" placeholder="粘贴导出的 base64 内容" :border="false" />
+      <Button block type="primary" :loading="importing" @click="doImport">导入并进入</Button>
+    </Popup>
   </div>
 </template>
 
@@ -54,6 +80,17 @@ const showCreate = ref(false)
 const newCode = ref('')
 const newName = ref('')
 const creating = ref(false)
+
+// 导出
+const showExport = ref(false)
+const exportData = ref('')
+const exportName = ref('')
+// 导入
+const showImport = ref(false)
+const importName = ref('')
+const importCode = ref('')
+const importData = ref('')
+const importing = ref(false)
 
 async function load() {
   loading.value = true
@@ -122,6 +159,60 @@ function logout() {
   auth.logout()
 }
 
+/** 导出房间：拉取服务端编码好的 base64 内容并展示 */
+async function exportRoom(code: string, name: string) {
+  try {
+    const res = await $fetch<{ data: string }>(`/api/rooms/${encodeURIComponent(code)}/export`, {
+      headers: { Authorization: `Bearer ${auth.sessionToken.value}` }
+    })
+    exportData.value = res.data
+    exportName.value = name
+    showExport.value = true
+  } catch (e: any) {
+    showToast(e?.data?.message || '导出失败')
+  }
+}
+
+/** 复制导出的 base64 到剪贴板 */
+async function copyExport() {
+  try {
+    await navigator.clipboard.writeText(exportData.value)
+    showToast('已复制')
+  } catch {
+    showToast('复制失败，请手动选择复制')
+  }
+}
+
+/** 导入房间：将粘贴的 base64 数据提交到服务端创建新房间并写入事务 */
+async function doImport() {
+  if (!importData.value.trim()) {
+    showToast('请粘贴导入数据')
+    return
+  }
+  importing.value = true
+  try {
+    const res = await $fetch<{ room: { code: string } }>('/api/rooms/import', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth.sessionToken.value}` },
+      body: {
+        name: importName.value.trim() || undefined,
+        code: importCode.value.trim() || undefined,
+        data: importData.value.trim()
+      }
+    })
+    showImport.value = false
+    importData.value = ''
+    importName.value = ''
+    importCode.value = ''
+    showToast('导入成功')
+    navigateTo(`/r/${encodeURIComponent(res.room.code)}`)
+  } catch (e: any) {
+    showToast(e?.data?.message || '导入失败')
+  } finally {
+    importing.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -152,6 +243,24 @@ onMounted(load)
   color: #1989fa;
   font-size: 14px;
   cursor: pointer;
+}
+.bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pop-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  text-align: center;
+  color: #323233;
+}
+.pop-hint {
+  font-size: 12px;
+  color: #969799;
+  margin: 0 0 12px;
+  line-height: 1.5;
 }
 .title {
   font-size: 16px;
@@ -198,6 +307,12 @@ onMounted(load)
 }
 .r-arrow {
   color: #c8c9cc;
+}
+.r-export {
+  color: #07c160;
+  font-size: 18px;
+  padding: 4px 6px;
+  margin-right: 2px;
 }
 .r-del {
   color: #ee0a24;

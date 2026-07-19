@@ -5,6 +5,7 @@
 import { ref, computed, shallowRef } from 'vue'
 import { showToast } from 'vant'
 import { useTaskStore } from '@/composables/useTaskStore'
+import { dateOf } from '@/utils/ganttLayout'
 import { buildGanttCanvas, saveCanvasAsPng } from '@/utils/exportImage'
 import { hasTasksInRange } from '@/utils/ganttCanvasDraw'
 
@@ -51,6 +52,15 @@ export function useGanttExport(
   function offsetOf(d: Date): number {
     return Math.round((d.getTime() - todayDate().getTime()) / 86400000)
   }
+  // 由任务时间字符串（"YYYY-MM-DD HH:MM"）求相对今天的偏移；空则返回 0
+  function offsetOfDateStr(ds?: string | null): number {
+    if (!ds) return 0
+    const d = dateOf(ds)
+    if (!d) return 0
+    const [y, m, day] = d.split('-').map(Number)
+    const dt = new Date(y, (m || 1) - 1, day || 1)
+    return offsetOf(dt)
+  }
   function minOf(d: Date): number {
     return d.getHours() * 60 + d.getMinutes()
   }
@@ -70,9 +80,25 @@ export function useGanttExport(
   // 时间选择器列：天 + 时 + 分（vant 4 Picker 需 {text,value} 对象格式，纯字符串列会导致 confirm 取不到值 → NaN）
   const hourCols = Array.from({ length: 24 }, (_, i) => ({ text: pad2(i), value: pad2(i) }))
   const minuteCols = Array.from({ length: 60 }, (_, i) => ({ text: pad2(i), value: pad2(i) }))
+  // 所有事务中最晚结束时间所在的「相对今天」偏移（无结束则用开始）
+  // 无事务时返回 -Infinity，下方统一兜底为 0（今天）
+  const maxTaskEndOffset = computed(() => {
+    let maxOff = -Infinity
+    for (const day of days.value) {
+      for (const t of day.tasks) {
+        const off = offsetOfDateStr(t.endTime || t.startTime)
+        if (off > maxOff) maxOff = off
+      }
+    }
+    return Number.isFinite(maxOff) ? maxOff : 0
+  })
   const dayOptions = computed(() => {
     const arr: { text: string; value: number }[] = []
-    for (let o = -2; o <= 10; o++) arr.push({ text: titleForOffset(o), value: o })
+    // 结束时间最大可选到「最晚事务结束日 +1 天」。边界处理：
+    //  - 无事务：maxTaskEndOffset=0 → hi=1（今天次日），再被 +10 兜住，范围不至于过窄；
+    //  - 最晚事务在过去（maxOff<0）：maxOff+1 仍 ≤0，被 +10 兜住，不会把结束范围限制在过去。
+    const hi = Math.max(10, maxTaskEndOffset.value + 1)
+    for (let o = -2; o <= hi; o++) arr.push({ text: titleForOffset(o), value: o })
     return arr
   })
   const dateTimeColumns = computed(() => [dayOptions.value, hourCols, minuteCols])
@@ -129,7 +155,7 @@ export function useGanttExport(
       showToast('所选时间范围内没有任务，请重新选择范围')
       return
     }
-    const canvas = buildGanttCanvas({
+    const res = buildGanttCanvas({
       days: days.value,
       interval: interval.value,
       startAbs,
@@ -142,6 +168,10 @@ export function useGanttExport(
       autoTrim: exAutoTrim.value,
       trimPadCells: exTrimPad.value
     })
+    const canvas = res.canvas
+    if (res.clamped) {
+      showToast('所选范围较大，已自动调整清晰度/时间粒度以保证导出成功，可增大时间单元获得更清晰图片')
+    }
     previewCanvas.value = canvas
     previewUrl.value = canvas.toDataURL('image/png')
     previewName.value = `甘特图_${titleForOffset(sOff)}-${titleForOffset(eOff)}.png`

@@ -12,7 +12,7 @@
 import { assignTracks } from './ganttLayout'
 import type { DayData, TaskItem } from '@/types/gantt'
 // CELL_PX 唯一来源为 ganttViewBuild（ganttCanvasDraw 已改为从此引入）
-import { CELL_PX } from '@/utils/ganttViewBuild'
+import { CELL_PX, DECLARE_TRAIL_MIN } from '@/utils/ganttViewBuild'
 import {
   DEFAULT_TASK_COLOR,
   nightGradient,
@@ -75,10 +75,12 @@ interface BuiltDay {
 }
 
 /** 从数据模型构建甘特图 Canvas（逻辑坐标，再按 scale 放大以保证高清） */
-export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
+export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasElement; clamped: boolean } {
   const { days, interval, startAbs, endAbs, colW, scale, watermark, title, rangeText, autoTrim = false, trimPadCells = 2 } = opts
-  const pxPerMin = CELL_PX / interval
-  const labelStep = interval >= 30 ? interval : 30
+  let pxPerMin = CELL_PX / interval
+  // 标题栏高度（提供 title 或 rangeText 任一即渲染）；提前定义供下方尺寸上限保护使用
+  const TITLE_H = title || rangeText ? 44 : 0
+  // labelStep 在下方根据最终（可能被自动加粗的）间隔确定
 
   const base = getBaseDate(days)
   const ti = todayIndexFromDays(days)
@@ -113,6 +115,28 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
     }
   }
 
+  // ===== 浏览器 Canvas 边长上限保护 =====
+  // 超长范围（如 28 天）在较细间隔下画布高度会远超浏览器单边长上限（约 16384px），
+  // 此时画布静默失效、toDataURL 返回空 data:,，预览出现 <img src="data:,">。
+  // 这里自动降倍数 / 加粗间隔（增大每格分钟数），保证导出图始终有效。
+  const MAX_CANVAS = 16384
+  const totalWinMin = endAbsBase - startAbsBase
+  let effScale = scale
+  const rawH = TITLE_H + totalWinMin * pxPerMin
+  // 先保持间隔，把倍数降到不超高度上限
+  if (rawH * effScale > MAX_CANVAS) {
+    effScale = Math.min(effScale, MAX_CANVAS / rawH)
+  }
+  // 若倍数须 <1 仍超高（间隔太细）：自动加粗间隔（增大 pxPerMin）直到 fit，倍数恢复为 1
+  if (effScale < 1) {
+    const needPxPerMin = MAX_CANVAS / Math.max(1, rawH)
+    pxPerMin = Math.max(pxPerMin, needPxPerMin)
+    effScale = 1
+  }
+  // 由最终间隔推导时间标签步长（间隔变粗后标签随之变疏）
+  const effInterval = CELL_PX / pxPerMin
+  const labelStep = effInterval >= 30 ? effInterval : 30
+
   // 标题时间范围始终按「实际渲染范围」（autoTrim 收缩后）显示，而非用户原始选择范围
   const effOff0 = Math.floor(startAbsBase / 1440) - ti
   const effMin0 = ((startAbsBase % 1440) + 1440) % 1440
@@ -138,7 +162,9 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
       const MIN_CARD_PX = 44
       const realHpx = dur * pxPerMin
       const padMin = Math.max(0, (MIN_CARD_PX - realHpx) / pxPerMin)
-      globalItems.push({ id: t.id, start: aStart, end: aEnd + padMin })
+      // 宣战额外「宣战中」色块占用结束后 60 分钟，需计入全局区间，避免导出图中该段时间被同轨道任务覆盖。
+      const trailMin = t.template === 'declare' && t.endTime ? DECLARE_TRAIL_MIN : 0
+      globalItems.push({ id: t.id, start: aStart, end: aEnd + padMin + trailMin })
     }
   }
   const layout = assignTracks(globalItems, 0)
@@ -146,10 +172,9 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
   const maxLanes = layout.totalTracks || 1
   const laneCount = Math.max(1, maxLanes)
 
-  const GUTTER = 64
+  const GUTTER = 72
   const PAD = 8
   const RAIL_W = 20
-  const TITLE_H = title || rangeText ? 44 : 0
 
   // 只渲染 [startAbs, endAbs] 覆盖到的天，按每天各自的可见窗口裁剪
   const dayData: BuiltDay[] = []
@@ -212,11 +237,17 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
   let contentH = TITLE_H
   for (const d of dayData) contentH += (d.winEnd - d.winStart) * pxPerMin
 
+  // 倍数保护：宽度方向也不得超过浏览器上限（与高度同理）
+  const finalScale = Math.min(effScale, MAX_CANVAS / (contentW || 1))
   const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(contentW * scale))
-  canvas.height = Math.max(1, Math.round(contentH * scale))
-  const ctx = canvas.getContext('2d')!
-  ctx.scale(scale, scale)
+  canvas.width = Math.max(1, Math.round(contentW * finalScale))
+  canvas.height = Math.max(1, Math.round(contentH * finalScale))
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    // 极端情况下画布仍创建失败，返回空画布，由调用方提示
+    return { canvas, clamped: true }
+  }
+  ctx.scale(finalScale, finalScale)
 
   // 背景
   ctx.fillStyle = '#ffffff'
@@ -437,21 +468,31 @@ export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
 
-    // 时间刻度（日期/时间范围已在顶部标题栏完整显示，此处不再重复绘制日界日期，
-    // 避免 autoTrim 收缩窗口后日界标签落在某时间刻度上造成重叠）
+    // 时间刻度：日界（m===0，即当天的 0:00）显示「月-日 周X」日期代替 00:00，
+    // 与屏幕轴 boundary-label 一致；24:00（m===1440）是下一天的 0:00，
+    // 由下一天在自身顶部绘制日期，这里跳过避免与次日标签重叠。
     ctx.fillStyle = '#646566'
     ctx.font = '700 13.75px "PingFang SC", monospace'
     const firstM = Math.ceil(d.winStart / labelStep) * labelStep
     for (let m = firstM; m <= d.winEnd + 0.001; m += labelStep) {
-      if (m === 0 || m === 1440) continue
       const gy = bodyY + (m - d.winStart) * pxPerMin
+      if (m === 0) {
+        // 当天顶部日界：用日期代替 00:00（蓝色加粗，与屏幕 boundary-label 一致）
+        ctx.fillStyle = '#1989fa'
+        ctx.font = '700 13.75px "PingFang SC", sans-serif'
+        ctx.fillText(monthDayForOffset(d.offset), GUTTER - 6, gy)
+        ctx.fillStyle = '#646566'
+        ctx.font = '700 13.75px "PingFang SC", monospace'
+        continue
+      }
+      if (m === 1440) continue
       ctx.fillText(fmtMin(m), GUTTER - 6, gy)
     }
   }
 
   if (watermark) drawWatermark(ctx, watermark, contentW, contentH)
 
-  return canvas
+  return { canvas, clamped: finalScale < scale || pxPerMin > CELL_PX / interval }
 }
 
 /** 触发浏览器下载 PNG */

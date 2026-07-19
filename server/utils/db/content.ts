@@ -128,6 +128,22 @@ export async function resetDays(roomId: string): Promise<void> {
   await db.delete(schema.days).where(eq(schema.days.roomId, roomId))
 }
 
+/** 导入房间内容：仅写入事务信息（days + tasks）。
+ * 重新生成任务的全局唯一 id（避免与导入方/其他房间的任务主键冲突），
+ * seriesId 保留以维持同一周期内任务的关联。 */
+export async function importDays(roomId: string, daysData: DayData[]): Promise<void> {
+  await ready()
+  for (const day of daysData) {
+    if (!day || !Array.isArray(day.tasks) || !day.date) continue
+    const dayId = await ensureDayId(roomId, day.date)
+    for (const t of day.tasks) {
+      if (!t || !t.name) continue
+      const item: TaskItem = { ...t, id: genId() }
+      await db.insert(schema.tasks).values(taskToRow(item, roomId, dayId))
+    }
+  }
+}
+
 // ====== 内部：行 ↔ 领域对象互转 ======
 function rowToTask(r: typeof schema.tasks.$inferSelect): TaskItem {
   return {

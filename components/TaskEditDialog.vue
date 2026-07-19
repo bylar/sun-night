@@ -1,7 +1,16 @@
 <template>
   <Popup v-model:show="show" position="bottom" round :style="{ maxHeight: '85%' }">
     <div class="edit-popup">
-      <h3>{{ editingTask ? '编辑事务' : '新增事务' }}</h3>
+      <div class="edit-header">
+        <h3>{{ editingTask ? '编辑事务' : '新增事务' }}</h3>
+        <Button
+          v-if="editingTask && canEdit"
+          size="mini"
+          class="after-btn"
+          @click="addAfter(editingTask)"
+          >AFTER</Button
+        >
+      </div>
 
       <Field v-model="editForm.name" label="事务标题" placeholder="如：开交宣战 / 纳粮双城" :border="false" />
 
@@ -205,6 +214,7 @@ const {
   onPavingConfirm,
   onCountValueInput,
   clearEndTime,
+  addAfter,
   saveTask,
   deleteTask,
   showSeriesDelete,
@@ -219,10 +229,18 @@ const {
   max-height: 80vh;
   overflow-y: auto;
 }
+.edit-header {
+  position: relative;
+}
 .edit-popup h3 {
   font-size: 17px;
   margin-bottom: 12px;
   text-align: center;
+}
+.after-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
 }
 .edit-actions {
   display: flex;
