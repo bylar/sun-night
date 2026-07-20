@@ -155,7 +155,7 @@ export function useGanttExport(
       showToast('所选时间范围内没有任务，请重新选择范围')
       return
     }
-    const res = buildGanttCanvas({
+    const canvas = buildGanttCanvas({
       days: days.value,
       interval: interval.value,
       startAbs,
@@ -168,10 +168,6 @@ export function useGanttExport(
       autoTrim: exAutoTrim.value,
       trimPadCells: exTrimPad.value
     })
-    const canvas = res.canvas
-    if (res.clamped) {
-      showToast('所选范围较大，已自动调整清晰度/时间粒度以保证导出成功，可增大时间单元获得更清晰图片')
-    }
     previewCanvas.value = canvas
     previewUrl.value = canvas.toDataURL('image/png')
     previewName.value = `甘特图_${titleForOffset(sOff)}-${titleForOffset(eOff)}.png`

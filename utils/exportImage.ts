@@ -8,6 +8,10 @@
  *
  * 时间范围使用「绝对分钟」（相对今天 00:00），支持跨天 datetime 区间：
  * 每天按自身在 [startAbs, endAbs] 内的可见窗口裁剪，时间标签（Y 轴）绘制在裁剪区外。
+ *
+ * 超长范围（如 28 天）的处理：不使用「自动降低缩放比例 / 加粗时间粒度」（那样会牺牲清晰度），
+ * 而是采用「多列」布局——把天数均分到若干列，每列竖向堆叠，列间用分割线隔开，
+ * 从而把画布高度控制在浏览器单边长上限（约 16384px）之内，清晰度由用户选择的 scale 决定。
  */
 import { assignTracks } from './ganttLayout'
 import type { DayData, TaskItem } from '@/types/gantt'
@@ -60,6 +64,10 @@ interface PlacedTask {
   end: number
   instant: boolean
   lane: number
+  /** 所属列（多列布局下用于分列绘制） */
+  col: number
+  /** 是否为该任务的首个片段（仅首个片段绘制名称，跨列时名称不重复） */
+  isFirst: boolean
   cardH: number
   color: string
   ticks: { top: number; count: number }[]
@@ -75,12 +83,13 @@ interface BuiltDay {
 }
 
 /** 从数据模型构建甘特图 Canvas（逻辑坐标，再按 scale 放大以保证高清） */
-export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasElement; clamped: boolean } {
+export function buildGanttCanvas(opts: ExportOptions): HTMLCanvasElement {
   const { days, interval, startAbs, endAbs, colW, scale, watermark, title, rangeText, autoTrim = false, trimPadCells = 2 } = opts
-  let pxPerMin = CELL_PX / interval
-  // 标题栏高度（提供 title 或 rangeText 任一即渲染）；提前定义供下方尺寸上限保护使用
+  const pxPerMin = CELL_PX / interval
+  // 标题栏高度（提供 title 或 rangeText 任一即渲染）
   const TITLE_H = title || rangeText ? 44 : 0
-  // labelStep 在下方根据最终（可能被自动加粗的）间隔确定
+  // 时间标签步长：间隔较密时用 30 分钟，避免拥挤（不做「加粗间隔」以牺牲清晰度）
+  const labelStep = interval >= 30 ? interval : 30
 
   const base = getBaseDate(days)
   const ti = todayIndexFromDays(days)
@@ -114,28 +123,6 @@ export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasEleme
       }
     }
   }
-
-  // ===== 浏览器 Canvas 边长上限保护 =====
-  // 超长范围（如 28 天）在较细间隔下画布高度会远超浏览器单边长上限（约 16384px），
-  // 此时画布静默失效、toDataURL 返回空 data:,，预览出现 <img src="data:,">。
-  // 这里自动降倍数 / 加粗间隔（增大每格分钟数），保证导出图始终有效。
-  const MAX_CANVAS = 16384
-  const totalWinMin = endAbsBase - startAbsBase
-  let effScale = scale
-  const rawH = TITLE_H + totalWinMin * pxPerMin
-  // 先保持间隔，把倍数降到不超高度上限
-  if (rawH * effScale > MAX_CANVAS) {
-    effScale = Math.min(effScale, MAX_CANVAS / rawH)
-  }
-  // 若倍数须 <1 仍超高（间隔太细）：自动加粗间隔（增大 pxPerMin）直到 fit，倍数恢复为 1
-  if (effScale < 1) {
-    const needPxPerMin = MAX_CANVAS / Math.max(1, rawH)
-    pxPerMin = Math.max(pxPerMin, needPxPerMin)
-    effScale = 1
-  }
-  // 由最终间隔推导时间标签步长（间隔变粗后标签随之变疏）
-  const effInterval = CELL_PX / pxPerMin
-  const labelStep = effInterval >= 30 ? effInterval : 30
 
   // 标题时间范围始终按「实际渲染范围」（autoTrim 收缩后）显示，而非用户原始选择范围
   const effOff0 = Math.floor(startAbsBase / 1440) - ti
@@ -175,10 +162,11 @@ export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasEleme
   const GUTTER = 72
   const PAD = 8
   const RAIL_W = 20
+  // 多列布局：列间留白（分割区）
+  const DIV_W = 18
 
   // 只渲染 [startAbs, endAbs] 覆盖到的天，按每天各自的可见窗口裁剪
   const dayData: BuiltDay[] = []
-  let _y = TITLE_H
   for (let o = startDayOff; o <= endDayOff; o++) {
     const dayStartAbs = o * 1440
     const dayEndAbs = (o + 1) * 1440
@@ -189,15 +177,70 @@ export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasEleme
     dayData.push({
       offset: offToday,
       dayStartAbs,
-      bodyY: _y,
+      bodyY: 0,
       winStart: wStart - dayStartAbs,
       winEnd: wEnd - dayStartAbs,
       winH: (wEnd - wStart) * pxPerMin
     })
-    _y = _y + (wEnd - wStart) * pxPerMin
   }
 
-  // 跨天任务合并为单张卡片：同一任务在相邻天的片段合并成一根连续竖条（名称只画一次）
+  if (!dayData.length) {
+    // 无可见天（理论上不会被调用，兜底返回 1x1 画布）
+    const c = document.createElement('canvas')
+    c.width = 1
+    c.height = 1
+    return c
+  }
+
+  // ===== 多列分块：按「每天窗口高度」贪心均衡分到若干列，使每列高度 <= 单边长上限 =====
+  const MAX_CANVAS = 16384
+  const dayHeights = dayData.map((d) => d.winH)
+  const totalDaysHeight = dayHeights.reduce((a, b) => a + b, 0)
+  // 单列目标高度（留标题与边距余量）；至少容纳一整天
+  const targetPerCol = Math.max(1440 * pxPerMin, (MAX_CANVAS / Math.max(1, scale)) - TITLE_H - 40)
+  const colDays: number[][] = []
+  {
+    let cur: number[] = []
+    let curH = 0
+    for (let di = 0; di < dayData.length; di++) {
+      if (cur.length && curH + dayHeights[di] > targetPerCol) {
+        colDays.push(cur)
+        cur = []
+        curH = 0
+      }
+      cur.push(di)
+      curH += dayHeights[di]
+    }
+    if (cur.length) colDays.push(cur)
+  }
+  const K = colDays.length
+
+  // 每列内的天，bodyY 重算为「相对画布顶部的绝对 y」（列从 TITLE_H 起竖向堆叠）
+  const dayColumns: number[] = new Array(dayData.length).fill(0)
+  const localBodyY: number[] = new Array(dayData.length).fill(0)
+  const columnHeights: number[] = []
+  const colX: number[] = []
+  for (let c = 0; c < K; c++) {
+    colX[c] = c * (GUTTER + laneCount * colW + DIV_W)
+    let localY = TITLE_H
+    let h = 0
+    for (const di of colDays[c]) {
+      dayColumns[di] = c
+      localBodyY[di] = localY
+      dayData[di].bodyY = localY
+      localY += dayHeights[di]
+      h += dayHeights[di]
+    }
+    columnHeights[c] = h
+  }
+  const maxColH = Math.max(...columnHeights, 0)
+  const bodyW = laneCount * colW
+  const contentW = GUTTER + bodyW // 单列宽度
+  const fullW = K * contentW + (K - 1) * DIV_W // 整图宽度
+  const contentH = TITLE_H + maxColH // 整图高度（取最高列）
+
+  // 跨天任务：逐天裁剪为片段，同一列内连续天合并为一条竖条（名称仅首个片段绘制），
+  // 跨列的任务自然在列边界处断开为多段（每列各一段，名称仍只在最前一段）。
   const placed: PlacedTask[] = []
   const seen2 = new Set<string>()
   for (const day of days) {
@@ -207,56 +250,72 @@ export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasEleme
       const aStart = relMin(t.startTime, base)
       const dur = t.endTime ? Math.max(relMin(t.endTime, base) - aStart, 0) : 0
       const aEnd = aStart + dur
-      // 仅取导出窗口内的可见部分，跨天任务自然落在首/尾天对应的布局里
       const effStart = Math.max(aStart, startAbsBase)
       const effEnd = Math.min(aEnd, endAbsBase)
-      if (effEnd <= effStart) continue
+      if (effEnd <= effStart) continue // 瞬时任务（无 endTime）在画布中不渲染
       const startIdx = Math.floor((effStart - startAbsBase) / 1440)
       const endIdx = Math.floor((effEnd - startAbsBase) / 1440)
-      const sd = dayData[startIdx]
-      const ed = dayData[endIdx]
-      if (!sd || !ed) continue
-      const top = sd.bodyY + (effStart - (startAbsBase + startIdx * 1440)) * pxPerMin
-      const bottom = ed.bodyY + (effEnd - (startAbsBase + endIdx * 1440)) * pxPerMin
-      placed.push({
-        task: t,
-        start: top,
-        end: bottom,
-        instant: !t.endTime,
-        lane: globalTracks[t.id] ?? 0,
-        cardH: estimateCardPx(t.name, !!t.pavingMode, colW),
-        color: t.color || DEFAULT_TASK_COLOR,
-        // 刻度相对任务起点（整根竖条只算一次）
-        ticks: computeTicks(t, aStart, aEnd, pxPerMin, interval, aStart, aEnd)
-      })
+      const frags: { di: number; f0: number; f1: number }[] = []
+      for (let di = startIdx; di <= endIdx; di++) {
+        const d = dayData[di]
+        if (!d) continue
+        const dayAbsStart = d.dayStartAbs + d.winStart
+        const dayAbsEnd = d.dayStartAbs + d.winEnd
+        const f0 = Math.max(effStart, dayAbsStart)
+        const f1 = Math.min(effEnd, dayAbsEnd)
+        if (f1 > f0) frags.push({ di, f0, f1 })
+      }
+      if (!frags.length) continue
+      // 合并同一列且相邻天的片段为一条 bar
+      let first = true
+      let i = 0
+      while (i < frags.length) {
+        const col = dayColumns[frags[i].di]
+        let j = i
+        while (j + 1 < frags.length && dayColumns[frags[j + 1].di] === col && frags[j + 1].di === frags[j].di + 1) j++
+        const fTop = frags[i]
+        const fBot = frags[j]
+        const topDay = dayData[fTop.di]
+        const botDay = dayData[fBot.di]
+        const top = localBodyY[fTop.di] + (fTop.f0 - (topDay.dayStartAbs + topDay.winStart)) * pxPerMin
+        const bottom = localBodyY[fBot.di] + (fBot.f1 - (botDay.dayStartAbs + botDay.winStart)) * pxPerMin
+        placed.push({
+          task: t,
+          start: top,
+          end: bottom,
+          instant: !t.endTime,
+          lane: globalTracks[t.id] ?? 0,
+          col,
+          isFirst: first,
+          cardH: estimateCardPx(t.name, !!t.pavingMode, colW),
+          color: t.color || DEFAULT_TASK_COLOR,
+          // 刻度相对任务起点（整段只算一次），按当前片段窗口过滤
+          ticks: computeTicks(t, aStart, aEnd, pxPerMin, interval, fTop.f0, fBot.f1)
+        })
+        first = false
+        i = j + 1
+      }
     }
   }
 
-  const bodyW = laneCount * colW
-  const contentW = GUTTER + bodyW
-  let contentH = TITLE_H
-  for (const d of dayData) contentH += (d.winEnd - d.winStart) * pxPerMin
-
-  // 倍数保护：宽度方向也不得超过浏览器上限（与高度同理）
-  const finalScale = Math.min(effScale, MAX_CANVAS / (contentW || 1))
+  // 画布尺寸保护：仅在极端情况下（如单天配合超高 scale 仍超上限）对 scale 做兜底收缩，
+  // 不再「加粗时间粒度」，清晰度由用户选择的 scale 决定。
+  const finalScale = Math.min(scale, MAX_CANVAS / Math.max(1, fullW), MAX_CANVAS / Math.max(1, contentH))
   const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(contentW * finalScale))
+  canvas.width = Math.max(1, Math.round(fullW * finalScale))
   canvas.height = Math.max(1, Math.round(contentH * finalScale))
   const ctx = canvas.getContext('2d')
-  if (!ctx) {
-    // 极端情况下画布仍创建失败，返回空画布，由调用方提示
-    return { canvas, clamped: true }
-  }
+  if (!ctx) return canvas // 极端情况画布仍失败，返回空画布由调用方处理
   ctx.scale(finalScale, finalScale)
 
   // 背景
   ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, contentW, contentH)
+  ctx.fillRect(0, 0, fullW, contentH)
 
   // 标题栏：提供 title 或 rangeText 任一即渲染。左=标题，右=时间范围（含具体日期+时刻）
   if (title || rangeText) {
     ctx.fillStyle = '#f7f8fa'
-    ctx.fillRect(0, 0, contentW, TITLE_H)
+    ctx.fillRect(0, 0, fullW, TITLE_H)
     ctx.textBaseline = 'middle'
     if (title) {
       ctx.fillStyle = '#323233'
@@ -266,56 +325,82 @@ export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasEleme
     }
     ctx.textAlign = 'right'
     if (rangeText) {
-      // 顶部时间范围显示「实际渲染范围」（autoTrim 收缩后），避免显示去头去尾前的原始选择范围
       ctx.fillStyle = '#1989fa'
       ctx.font = '600 14px "PingFang SC", "Microsoft YaHei", sans-serif'
-      ctx.fillText(renderRange, contentW - PAD, TITLE_H / 2)
+      ctx.fillText(renderRange, fullW - PAD, TITLE_H / 2)
     } else {
       ctx.fillStyle = '#969799'
       ctx.font = '500 12px "PingFang SC", "Microsoft YaHei", sans-serif'
-      ctx.fillText(`${monthDayForOffset(dayData[0].offset)} ~ ${monthDayForOffset(dayData[dayData.length - 1].offset)}`, contentW - PAD, TITLE_H / 2)
+      ctx.fillText(`${monthDayForOffset(dayData[0].offset)} ~ ${monthDayForOffset(dayData[dayData.length - 1].offset)}`, fullW - PAD, TITLE_H / 2)
     }
   }
 
-  // ===== 先画网格（不含任务卡片；日期表头/现在线已移除，连续时间轴）=====
-  for (const d of dayData) {
-    const dayWinH = d.winH
-    const bodyY = d.bodyY
-
-    // 裁剪到当天可见时间窗
+  // ===== 逐列绘制：背景/网格/夜色/时间轴 + 本列任务 =====
+  for (let c = 0; c < K; c++) {
     ctx.save()
-    ctx.beginPath()
-    ctx.rect(GUTTER, bodyY, bodyW, dayWinH)
-    ctx.clip()
+    ctx.translate(colX[c], 0)
 
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(GUTTER, bodyY, bodyW, dayWinH)
+    // 网格 + 夜色渐变 + 时间轴（仅左侧 gutter）
+    for (const di of colDays[c]) {
+      const d = dayData[di]
+      const dayWinH = d.winH
+      const bodyY = d.bodyY
 
-    // 网格线（按当天分钟窗口）
-    ctx.lineWidth = 1
-    for (let m = d.winStart; m <= d.winEnd + 0.001; m += labelStep) {
-      const gy = bodyY + (m - d.winStart) * pxPerMin
-      ctx.strokeStyle = Math.round(m) % 60 === 0 ? '#e3e5e9' : '#f0f1f3'
+      // 裁剪到当天可见时间窗
+      ctx.save()
       ctx.beginPath()
-      ctx.moveTo(GUTTER, gy)
-      ctx.lineTo(GUTTER + bodyW, gy)
-      ctx.stroke()
+      ctx.rect(GUTTER, bodyY, bodyW, dayWinH)
+      ctx.clip()
+
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(GUTTER, bodyY, bodyW, dayWinH)
+
+      // 网格线（按当天分钟窗口）
+      ctx.lineWidth = 1
+      for (let m = d.winStart; m <= d.winEnd + 0.001; m += labelStep) {
+        const gy = bodyY + (m - d.winStart) * pxPerMin
+        ctx.strokeStyle = Math.round(m) % 60 === 0 ? '#e3e5e9' : '#f0f1f3'
+        ctx.beginPath()
+        ctx.moveTo(GUTTER, gy)
+        ctx.lineTo(GUTTER + bodyW, gy)
+        ctx.stroke()
+      }
+      ctx.restore()
+
+      // 夜色渐变背景（gutter）
+      ctx.fillStyle = nightGradient(ctx, bodyY, dayWinH, d.winStart, d.winEnd)
+      ctx.fillRect(0, bodyY, GUTTER, dayWinH)
+
+      // 时间刻度：日界（m===0，即当天的 0:00）显示「月-日 周X」日期代替 00:00，
+      // 与屏幕轴 boundary-label 一致；24:00（m===1440）是下一天的 0:00，由下一天在自身顶部绘制。
+      ctx.textAlign = 'right'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = '#646566'
+      ctx.font = '700 13.75px "PingFang SC", monospace'
+      const firstM = Math.ceil(d.winStart / labelStep) * labelStep
+      for (let m = firstM; m <= d.winEnd + 0.001; m += labelStep) {
+        const gy = bodyY + (m - d.winStart) * pxPerMin
+        if (m === 0) {
+          ctx.fillStyle = '#1989fa'
+          ctx.font = '700 13.75px "PingFang SC", sans-serif'
+          ctx.fillText(monthDayForOffset(d.offset), GUTTER - 6, gy)
+          ctx.fillStyle = '#646566'
+          ctx.font = '700 13.75px "PingFang SC", monospace'
+          continue
+        }
+        if (m === 1440) continue
+        ctx.fillText(fmtMin(m), GUTTER - 6, gy)
+      }
     }
 
-    ctx.restore()
-  }
-
-  // ===== 跨天合并卡片：整根连续竖条，覆盖在天的分隔线上方，名称只画一次 =====
-  if (dayData.length) {
-    const bodyTop = dayData[0].bodyY
-    const bodyBottom = dayData[dayData.length - 1].bodyY + dayData[dayData.length - 1].winH
+    // 本列任务（裁剪到本列竖向区域）
     ctx.save()
     ctx.beginPath()
-    ctx.rect(GUTTER, bodyTop, bodyW, bodyBottom - bodyTop)
+    ctx.rect(GUTTER, TITLE_H, bodyW, columnHeights[c])
     ctx.clip()
     for (const t of placed) {
+      if (t.col !== c) continue
       const tEnd = t.instant ? t.start : t.end
-      if (tEnd < bodyTop || t.start > bodyBottom) continue
       const top = t.start
       const height = Math.max(tEnd - t.start, 0)
       if (height <= 0) continue
@@ -345,49 +430,51 @@ export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasEleme
       ctx.strokeStyle = 'rgba(255,255,255,0.25)'
       ctx.stroke()
 
-      // 名称框（仅画一次，置于起点）：背景为任务色 10% 透明（与屏幕 g-col 的 tint(t.color,0.1) 一致），右侧圆角
-      roundRect(ctx, cardX, top, cardW, cardH, { tl: 0, tr: 6, br: 6, bl: 0 })
-      ctx.fillStyle = tint(t.color, 0.1)
-      ctx.fill()
-      ctx.strokeStyle = t.task.isHighlighted ? '#ee0a24' : 'rgba(0,0,0,0.06)'
-      ctx.lineWidth = t.task.isHighlighted ? 2 : 1
-      ctx.stroke()
-
-      // 名称（换行，最多 3 行）：颜色与屏幕一致，用任务色（非深灰）
-      ctx.fillStyle = t.color
-      ctx.font = '600 12px "PingFang SC", "Microsoft YaHei", sans-serif'
-      ctx.textAlign = 'left'
-      ctx.textBaseline = 'top'
-      const lines = wrapText(ctx, t.task.name || '事务', cardW - 16)
-      let ly = top + 6
-      for (const ln of lines.slice(0, 3)) {
-        ctx.fillText(ln, cardX + 8, ly)
-        ly += 15
-      }
-
-      // 铺路标签
-      if (t.task.pavingMode) {
-        const tag = t.task.pavingMode === 'auto' ? '自动' : '接力'
-        ctx.font = '700 10px sans-serif'
-        const tw = ctx.measureText(tag).width + 10
-        ctx.fillStyle = '#e8f8ef'
-        roundRect(ctx, cardX + 8, ly + 2, tw, 16, 8)
+      // 名称框（仅首个片段绘制，置于起点）：背景为任务色 10% 透明，右侧圆角
+      if (t.isFirst) {
+        roundRect(ctx, cardX, top, cardW, cardH, { tl: 0, tr: 6, br: 6, bl: 0 })
+        ctx.fillStyle = tint(t.color, 0.1)
         ctx.fill()
-        ctx.fillStyle = '#07c160'
-        ctx.fillText(tag, cardX + 13, ly + 6)
-      }
+        ctx.strokeStyle = t.task.isHighlighted ? '#ee0a24' : 'rgba(0,0,0,0.06)'
+        ctx.lineWidth = t.task.isHighlighted ? 2 : 1
+        ctx.stroke()
 
-      // 事务说明（标题下方，10px 浅灰，多行，与屏幕 .col-desc 一致）
-      if (descLines.length) {
-        ctx.fillStyle = '#646566'
-        ctx.font = '10px "PingFang SC", "Microsoft YaHei", sans-serif'
+        // 名称（换行，最多 3 行）：颜色与屏幕一致，用任务色（非深灰）
+        ctx.fillStyle = t.color
+        ctx.font = '600 12px "PingFang SC", "Microsoft YaHei", sans-serif'
         ctx.textAlign = 'left'
         ctx.textBaseline = 'top'
-        let dy = ly + (t.task.pavingMode ? 20 : 4)
-        for (const ln of descLines) {
-          if (dy > top + cardH - 12) break
-          ctx.fillText(ln, cardX + 8, dy)
-          dy += 14
+        const lines = wrapText(ctx, t.task.name || '事务', cardW - 16)
+        let ly = top + 6
+        for (const ln of lines.slice(0, 3)) {
+          ctx.fillText(ln, cardX + 8, ly)
+          ly += 15
+        }
+
+        // 铺路标签
+        if (t.task.pavingMode) {
+          const tag = t.task.pavingMode === 'auto' ? '自动' : '接力'
+          ctx.font = '700 10px sans-serif'
+          const tw = ctx.measureText(tag).width + 10
+          ctx.fillStyle = '#e8f8ef'
+          roundRect(ctx, cardX + 8, ly + 2, tw, 16, 8)
+          ctx.fill()
+          ctx.fillStyle = '#07c160'
+          ctx.fillText(tag, cardX + 13, ly + 6)
+        }
+
+        // 事务说明（标题下方，10px 浅灰，多行，与屏幕 .col-desc 一致）
+        if (descLines.length) {
+          ctx.fillStyle = '#646566'
+          ctx.font = '10px "PingFang SC", "Microsoft YaHei", sans-serif'
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'top'
+          let dy = ly + (t.task.pavingMode ? 20 : 4)
+          for (const ln of descLines) {
+            if (dy > top + cardH - 12) break
+            ctx.fillText(ln, cardX + 8, dy)
+            dy += 14
+          }
         }
       }
 
@@ -455,44 +542,22 @@ export function buildGanttCanvas(opts: ExportOptions): { canvas: HTMLCanvasEleme
       }
     }
     ctx.restore()
+
+    ctx.restore()
   }
 
-  // ===== Y 轴：深夜/浅夜 渐变背景 + 时间刻度（仅左侧 gutter）=====
-  for (let di = 0; di < dayData.length; di++) {
-    const d = dayData[di]
-    const dayWinH = d.winH
-    const bodyY = d.bodyY
-    ctx.fillStyle = nightGradient(ctx, bodyY, dayWinH, d.winStart, d.winEnd)
-    ctx.fillRect(0, bodyY, GUTTER, dayWinH)
-
-    ctx.textAlign = 'right'
-    ctx.textBaseline = 'middle'
-
-    // 时间刻度：日界（m===0，即当天的 0:00）显示「月-日 周X」日期代替 00:00，
-    // 与屏幕轴 boundary-label 一致；24:00（m===1440）是下一天的 0:00，
-    // 由下一天在自身顶部绘制日期，这里跳过避免与次日标签重叠。
-    ctx.fillStyle = '#646566'
-    ctx.font = '700 13.75px "PingFang SC", monospace'
-    const firstM = Math.ceil(d.winStart / labelStep) * labelStep
-    for (let m = firstM; m <= d.winEnd + 0.001; m += labelStep) {
-      const gy = bodyY + (m - d.winStart) * pxPerMin
-      if (m === 0) {
-        // 当天顶部日界：用日期代替 00:00（蓝色加粗，与屏幕 boundary-label 一致）
-        ctx.fillStyle = '#1989fa'
-        ctx.font = '700 13.75px "PingFang SC", sans-serif'
-        ctx.fillText(monthDayForOffset(d.offset), GUTTER - 6, gy)
-        ctx.fillStyle = '#646566'
-        ctx.font = '700 13.75px "PingFang SC", monospace'
-        continue
-      }
-      if (m === 1440) continue
-      ctx.fillText(fmtMin(m), GUTTER - 6, gy)
-    }
+  // ===== 列间分割线（浅色条 + 中心细线），表现「分列」而不喧宾夺主 =====
+  for (let c = 0; c < K - 1; c++) {
+    const x = colX[c] + contentW + DIV_W / 2
+    ctx.fillStyle = '#f0f1f3'
+    ctx.fillRect(x - 3, TITLE_H, 6, contentH - TITLE_H)
+    ctx.fillStyle = '#dcdee0'
+    ctx.fillRect(x - 0.5, TITLE_H, 1, contentH - TITLE_H)
   }
 
-  if (watermark) drawWatermark(ctx, watermark, contentW, contentH)
+  if (watermark) drawWatermark(ctx, watermark, fullW, contentH)
 
-  return { canvas, clamped: finalScale < scale || pxPerMin > CELL_PX / interval }
+  return canvas
 }
 
 /** 触发浏览器下载 PNG */
@@ -509,5 +574,3 @@ export function saveCanvasAsPng(canvas: HTMLCanvasElement, filename: string): vo
     URL.revokeObjectURL(url)
   }, 'image/png')
 }
-
-

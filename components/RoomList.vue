@@ -52,7 +52,7 @@
     <Popup v-model:show="showExport" position="bottom" round :style="{ padding: '20px 16px 24px' }">
       <h3 class="pop-title">导出房间：{{ exportName }}</h3>
       <p class="pop-hint">复制下方 base64 内容，可在其他账号「导入」该房间的全部事务（不含房间标题等元信息）。</p>
-      <Field v-model="exportData" type="textarea" rows="6" readonly :border="false" />
+      <Field v-model="exportData" type="textarea" readonly :autosize="{ minHeight: 120, maxHeight: 360 }" :border="false" />
       <Button block type="primary" @click="copyExport">复制</Button>
     </Popup>
 
@@ -61,7 +61,7 @@
       <h3 class="pop-title">导入房间</h3>
       <Field v-model="importName" label="房间名" placeholder="留空默认「导入的同盟」" :border="false" />
       <Field v-model="importCode" label="房间码" placeholder="留空自动生成" :border="false" />
-      <Field v-model="importData" type="textarea" rows="8" label="数据" placeholder="粘贴导出的 base64 内容" :border="false" />
+      <Field v-model="importData" type="textarea" label="数据" placeholder="粘贴导出的 base64 内容" :autosize="{ minHeight: 120, maxHeight: 320 }" :border="false" />
       <Button block type="primary" :loading="importing" @click="doImport">导入并进入</Button>
     </Popup>
   </div>
@@ -173,13 +173,36 @@ async function exportRoom(code: string, name: string) {
   }
 }
 
-/** 复制导出的 base64 到剪贴板 */
+/** 复制导出的 base64 到剪贴板（兼容非安全上下文：降级为 execCommand） */
 async function copyExport() {
+  const text = exportData.value
   try {
-    await navigator.clipboard.writeText(exportData.value)
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      throw new Error('clipboard-unavailable')
+    }
     showToast('已复制')
   } catch {
-    showToast('复制失败，请手动选择复制')
+    // 回退：临时 textarea + execCommand('copy')，确保长 base64 也能完整复制
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '0'
+    ta.style.left = '0'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    let ok = false
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      ok = false
+    }
+    document.body.removeChild(ta)
+    showToast(ok ? '已复制' : '复制失败，请长按文本框全选后手动复制')
   }
 }
 

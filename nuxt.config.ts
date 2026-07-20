@@ -44,6 +44,10 @@ export default defineNuxtConfig({
     // @libsql/client 内含预编译原生模块，构建时保持外部依赖，避免被打包破坏。
     externals: {
       external: ['@libsql/client']
+    },
+    // 房间导入的 base64 可能很大（如 28 天全量事务），放宽该路由的请求体上限。
+    routeRules: {
+      '/api/rooms/import': { maxBodySize: '16mb' }
     }
   }
 })
