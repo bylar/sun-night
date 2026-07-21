@@ -4,6 +4,7 @@
  * 滚动 / 现在线 / 交互逻辑仍在 composables/useGanttView.ts。
  */
 import { assignTracks, minutesOf, dateOf } from '@/utils/ganttLayout'
+import { pavedCountBetween, paceSecAt } from '@/utils/taskTime'
 import type { DayData, TaskItem } from '@/types/gantt'
 
 // ====== 常量 ======
@@ -18,8 +19,7 @@ export const CONTEXT_DAYS = 6
 // 与 CSS .timeline-scroll padding-top 保持一致
 export const SCROLL_PAD_TOP = 48
 
-// 铺路模式 → 每格耗时（秒）
-const PAVING_PACE: Record<'auto' | 'relay', number> = { auto: 3 * 60 + 10, relay: 3 * 60 }
+// 铺路模式 → 每格耗时（秒，含夜间 ×3）见 utils/taskTime 的 paceSecAt
 
 // 夜间时段（分钟）：0-1 浅夜、1-8 深夜、8-9 浅夜、9-24 正常
 type DayPhase = 'deep' | 'shallow' | 'normal'
@@ -168,14 +168,11 @@ function estimateCardPx(name: string, hasPave: boolean): number {
   return Math.min(Math.max(lines * 15 + 8, CELL_PX), 3 * CELL_PX)
 }
 
-function computePavedCount(task: TaskItem, absStart: number, absEnd: number, interval: number): number | null {
+function computePavedCount(task: TaskItem, absStart: number, absEnd: number, _interval: number): number | null {
   if (!task.pavingMode) return null
-  const pace = PAVING_PACE[task.pavingMode]
-  const durSec = Math.max(absEnd - absStart, 0) * 60
-  if (durSec <= 0) return 0
-  return Math.floor(durSec / pace)
+  return pavedCountBetween(absStart, absEnd, task.pavingMode)
 }
-/** 跨天合并卡片用：刻度相对任务起点 aStart（整根竖条只算一次） */
+/** 跨天合并卡片用：刻度相对任务起点 aStart（整根竖条只算一次），逐格按昼夜 pace 累计 */
 function computeMergedPaveTicks(
   task: TaskItem,
   aStart: number,
@@ -184,14 +181,29 @@ function computeMergedPaveTicks(
   interval: number
 ): { top: number; count: number }[] {
   if (!task.pavingMode) return []
-  const pace = PAVING_PACE[task.pavingMode]
+  const mode = task.pavingMode
   const dur = Math.max(aEnd - aStart, 0)
   if (dur <= 0) return []
-  const ticks: { top: number; count: number }[] = []
-  for (let m = aStart + interval; m < aEnd; m += interval) {
-    ticks.push({ top: (m - aStart) * pPerMin, count: Math.floor(((m - aStart) * 60) / pace) })
+  // 逐格推进，记录每格完成时的绝对时间与累计格数
+  const boundaries: { m: number; c: number }[] = []
+  let t = aStart
+  let count = 0
+  while (t < aEnd) {
+    const pace = paceSecAt(mode, t) / 60
+    const next = t + pace
+    if (next > aEnd) break
+    count++
+    boundaries.push({ m: next, c: count })
+    t = next
   }
-  ticks.push({ top: dur * pPerMin, count: Math.floor((dur * 60) / pace) })
+  const ticks: { top: number; count: number }[] = []
+  let bi = 0
+  for (let m = aStart + interval; m < aEnd; m += interval) {
+    while (bi < boundaries.length && boundaries[bi].m <= m) bi++
+    const c = bi > 0 ? boundaries[bi - 1].c : 0
+    ticks.push({ top: (m - aStart) * pPerMin, count: c })
+  }
+  ticks.push({ top: dur * pPerMin, count })
   return ticks
 }
 

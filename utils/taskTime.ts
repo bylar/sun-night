@@ -5,9 +5,43 @@
 import { parseDateTime, absMinutes } from '@/utils/ganttLayout'
 
 // ====== 铺路节奏（与视图一致）======
-export const PAVING_PACE_MIN: Record<'auto' | 'relay', number> = {
-  auto: (3 * 60 + 10) / 60,
-  relay: 3
+// 每格基础分钟：白天/浅夜（08:00–次日 01:00）= 3 分；夜间（01:00–08:00）翻 3 倍 = 9 分。
+// 自动铺路额外固定 +10 秒「行路」（不随昼夜翻倍），接力无附加。
+const PAVING_CELL_MIN = 3
+const PAVING_OVERHEAD_SEC: Record<'auto' | 'relay', number> = { auto: 10, relay: 0 }
+export const PAVING_NIGHT_MULT = 3
+export const PAVING_NIGHT_START = 60 // 01:00
+export const PAVING_NIGHT_END = 480 // 08:00
+
+/** 某绝对分钟处「当前格」的耗时（秒）：夜间（01:00–08:00）基础分钟 ×3，固定 +10s 行路不翻倍 */
+export function paceSecAt(mode: 'auto' | 'relay', absMin: number): number {
+  const mod = ((absMin % 1440) + 1440) % 1440
+  const night = mod >= PAVING_NIGHT_START && mod < PAVING_NIGHT_END
+  const base = PAVING_CELL_MIN * 60 * (night ? PAVING_NIGHT_MULT : 1)
+  return base + PAVING_OVERHEAD_SEC[mode]
+}
+
+/** 从 startAbs 起铺 count 格，返回结束绝对分钟（逐格按昼夜取 pace） */
+export function pavedEndAbs(startAbs: number, count: number, mode: 'auto' | 'relay'): number {
+  let t = startAbs
+  for (let i = 0; i < count; i++) t += paceSecAt(mode, t) / 60
+  return t
+}
+
+/** [absStart, absEnd) 内完成的铺路格数（不足一格不计入，逐格按昼夜取 pace） */
+export function pavedCountBetween(absStart: number, absEnd: number, mode: 'auto' | 'relay'): number {
+  if (absEnd <= absStart) return 0
+  let t = absStart
+  let c = 0
+  while (t < absEnd) {
+    const pace = paceSecAt(mode, t) / 60
+    const remain = absEnd - t
+    if (remain >= pace) {
+      c++
+      t += pace
+    } else break
+  }
+  return c
 }
 
 // ====== 大营夜间暂停（与夜间相位一致：normal 段 = 09:00–24:00，即分钟 540–1440）======

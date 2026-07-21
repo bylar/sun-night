@@ -11,7 +11,8 @@ import { parseDateTime, absMinutes, dateOf } from '@/utils/ganttLayout'
 
 // ====== 铺路节奏 / 时间计算（抽到 utils/taskTime）======
 import {
-  PAVING_PACE_MIN,
+  pavedEndAbs,
+  pavedCountBetween,
   CAMP_ACTIVE_START,
   DAY_MIN,
   pad,
@@ -371,8 +372,8 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
         ? campEndTime(editForm.value.startTime, t.durationMin)
         : addMinutesToTime(editForm.value.startTime, t.durationMin)
     } else if (t.pavingMode && t.countValue) {
-      const pace = PAVING_PACE_MIN[t.pavingMode]
-      const mins = Math.round(t.countValue * pace)
+      const s = absMinutes(editForm.value.startTime)
+      const mins = Math.round(pavedEndAbs(s, t.countValue, t.pavingMode) - s)
       editForm.value.endTime = addMinutesToTime(editForm.value.startTime, mins)
       editForm.value.count = t.countValue
     }
@@ -388,7 +389,7 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     const s = absMinutes(editForm.value.startTime)
     const e = editForm.value.endTime ? absMinutes(editForm.value.endTime) : s
     const dur = Math.max(0, e - s)
-    editForm.value.count = Math.max(0, Math.round(dur / PAVING_PACE_MIN[pm]))
+    editForm.value.count = Math.max(0, pavedCountBetween(s, e, pm))
   }
 
   function onStartConfirm(val: unknown) {
@@ -435,7 +436,8 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     editForm.value.countValue = Number(v) || 0
     const pm = editForm.value.pavingMode
     if (!pm) return
-    const mins = Math.round(editForm.value.countValue * PAVING_PACE_MIN[pm])
+    const s = absMinutes(editForm.value.startTime)
+    const mins = Math.round(pavedEndAbs(s, editForm.value.countValue, pm) - s)
     editForm.value.endTime = addMinutesToTime(editForm.value.startTime, mins)
     editForm.value.count = editForm.value.countValue
   }
@@ -521,7 +523,7 @@ export function useTaskEditor(onSaved?: (dateStr: string) => void) {
     const s = absMinutes(editForm.value.startTime)
     const e = editForm.value.endTime ? absMinutes(editForm.value.endTime) : s
     const dur = Math.max(0, e - s)
-    const n = Math.round(dur / PAVING_PACE_MIN[pm])
+    const n = pavedCountBetween(s, e, pm)
     return `${Math.floor(dur / 60)}时${dur % 60}分 · 约${n}格`
   })
 

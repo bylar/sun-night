@@ -37,6 +37,6 @@ export const COLOR_PRESETS = [
 
 export const pavingOptions = [
   { text: '不铺路', value: '' },
-  { text: '自动铺路 (3分10秒/格)', value: 'auto' },
-  { text: '接力铺路 (3分/格)', value: 'relay' }
+  { text: '自动铺路 (3分10秒/格·夜间×3)', value: 'auto' },
+  { text: '接力铺路 (3分/格·夜间×3)', value: 'relay' }
 ]

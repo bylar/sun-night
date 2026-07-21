@@ -5,6 +5,7 @@
  * 时段色带 / 网格 / 卡片样式镜像组件 CSS。
  */
 import { minutesOf, dateOf } from './ganttLayout'
+import { paceSecAt, pavedCountBetween } from './taskTime'
 import type { DayData, TaskItem } from '@/types/gantt'
 // CELL_PX 唯一来源为 ganttViewBuild，本模块仅引入使用，避免重复定义触发重复导入告警
 import { CELL_PX } from '@/utils/ganttViewBuild'
@@ -12,11 +13,7 @@ import { CELL_PX } from '@/utils/ganttViewBuild'
 export const DEFAULT_TASK_COLOR = '#1989fa'
 const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六']
 
-// 铺路节奏（与组件一致）
-export const PAVING_PACE: Record<'auto' | 'relay', number> = {
-  auto: 3 * 60 + 10,
-  relay: 3 * 60
-}
+// 铺路节奏（每格耗时，含夜间 ×3）见 utils/taskTime 的 paceSecAt
 
 // 深夜/浅夜 平滑渐变的颜色关键帧（按「分钟/天」定位），半透明以便透出时刻线
 const NIGHT_KEYS: { m: number; c: string }[] = [
@@ -132,20 +129,34 @@ export function computeTicks(
   winEnd: number
 ): { top: number; count: number }[] {
   if (!task.pavingMode) return []
-  const pace = PAVING_PACE[task.pavingMode]
+  const mode = task.pavingMode
   const dur = Math.max(aEnd - aStart, 0)
   if (dur <= 0) return []
   // 仅取导出窗口内的 tick（跨天任务只显示落在窗口内的刻度）
   const visStart = Math.max(aStart, winStart)
   const visEnd = Math.min(aEnd, winEnd)
   if (visEnd <= visStart) return []
-  const ticks: { top: number; count: number }[] = []
-  for (let m = aStart + interval; m < aEnd; m += interval) {
-    if (m >= visStart && m <= visEnd) {
-      ticks.push({ top: (m - visStart) * pxPerMin, count: Math.floor(((m - aStart) * 60) / pace) })
-    }
+  // 逐格推进（按昼夜 pace），累计格数，再对窗口内 interval 网格取样
+  const boundaries: { m: number; c: number }[] = []
+  let t = aStart
+  let count = 0
+  while (t < aEnd) {
+    const pace = paceSecAt(mode, t) / 60
+    const next = t + pace
+    if (next > aEnd) break
+    count++
+    boundaries.push({ m: next, c: count })
+    t = next
   }
-  ticks.push({ top: (visEnd - visStart) * pxPerMin, count: Math.floor((dur * 60) / pace) })
+  const ticks: { top: number; count: number }[] = []
+  let bi = 0
+  for (let m = aStart + interval; m < aEnd; m += interval) {
+    if (m < visStart || m > visEnd) continue
+    while (bi < boundaries.length && boundaries[bi].m <= m) bi++
+    const c = bi > 0 ? boundaries[bi - 1].c : 0
+    ticks.push({ top: (m - visStart) * pxPerMin, count: c })
+  }
+  ticks.push({ top: (visEnd - visStart) * pxPerMin, count })
   return ticks
 }
 
